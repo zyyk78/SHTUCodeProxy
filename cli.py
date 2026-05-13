@@ -113,30 +113,52 @@ def is_toml_section_header(line: str) -> bool:
     return stripped.startswith("[") and stripped.endswith("]")
 
 
-def is_codex_projects_header(line: str) -> bool:
+def toml_header_name(line: str) -> str:
     stripped = line.strip()
     if not is_toml_section_header(stripped):
+        return ""
+    return stripped.strip("[]").strip()
+
+
+def is_managed_codex_section(header_name: str) -> bool:
+    return header_name in {
+        "features",
+        "windows",
+        "model_providers.shtu_proxy",
+        "profiles.shtu_proxy",
+        "model_providers.custom",
+    }
+
+
+def is_stale_model_selection_line(header_name: str, line: str) -> bool:
+    if header_name.startswith("profiles."):
         return False
-    inner = stripped.strip("[]").strip()
-    return inner == "projects" or inner.startswith("projects.")
+    stripped = line.strip()
+    return stripped.startswith("model =") or stripped.startswith("model_provider =")
 
 
-def codex_preserved_project_blocks(existing: str) -> str:
-    lines = existing.splitlines()
-    blocks: list[str] = []
-    index = 0
-    while index < len(lines):
-        line = lines[index]
-        if not is_codex_projects_header(line):
-            index += 1
+def format_toml_value(value: object) -> str:
+    return json.dumps(value) if isinstance(value, str) else str(value).lower()
+
+
+def parse_flat_toml_section(existing: str, section_name: str) -> dict[str, object]:
+    values: dict[str, object] = {}
+    in_section = False
+    for line in existing.splitlines():
+        stripped = line.strip()
+        if is_toml_section_header(stripped):
+            in_section = toml_header_name(stripped) == section_name
             continue
-        block: list[str] = [line]
-        index += 1
-        while index < len(lines) and not is_toml_section_header(lines[index]):
-            block.append(lines[index])
-            index += 1
-        blocks.append("\n".join(block).rstrip())
-    return "\n\n".join(block for block in blocks if block.strip())
+        if not in_section or not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key = stripped.split("=", 1)[0].strip()
+        try:
+            parsed_line = tomllib.loads(stripped)
+        except tomllib.TOMLDecodeError:
+            continue
+        if key in parsed_line:
+            values[key] = parsed_line[key]
+    return values
 
 
 def codex_preserved_config_block(existing: str) -> str:
@@ -145,24 +167,18 @@ def codex_preserved_config_block(existing: str) -> str:
     except tomllib.TOMLDecodeError:
         parsed = {}
     lines: list[str] = []
-    for key in (
-        "stream",
-        "model_context_window",
-        "model_auto_compact_token_limit",
-        "model_reasoning_effort",
-        "disable_response_storage",
-    ):
-        if key in parsed:
-            lines.append(f"{key} = {json.dumps(parsed[key]) if isinstance(parsed[key], str) else str(parsed[key]).lower()}")
-    features = parsed.get("features") if isinstance(parsed.get("features"), dict) else {}
+    unmanaged_root, unmanaged_sections = codex_unmanaged_config_parts(existing)
+    if unmanaged_root:
+        lines.append(unmanaged_root)
+        lines.append("")
+    features = parsed.get("features") if isinstance(parsed.get("features"), dict) else parse_flat_toml_section(existing, "features")
     feature_values = dict(features)
     feature_values.pop("codex_hooks", None)
     feature_values["hooks"] = True
-    lines.append("")
     lines.append("[features]")
     for key, value in feature_values.items():
-        lines.append(f"{key} = {json.dumps(value) if isinstance(value, str) else str(value).lower()}")
-    windows = parsed.get("windows") if isinstance(parsed.get("windows"), dict) else {}
+        lines.append(f"{key} = {format_toml_value(value)}")
+    windows = parsed.get("windows") if isinstance(parsed.get("windows"), dict) else parse_flat_toml_section(existing, "windows")
     windows_values = dict(windows)
     if os.name == "nt":
         windows_values["sandbox"] = "elevated"
@@ -170,62 +186,46 @@ def codex_preserved_config_block(existing: str) -> str:
         lines.append("")
         lines.append("[windows]")
         for key, value in windows_values.items():
-            lines.append(f"{key} = {json.dumps(value) if isinstance(value, str) else str(value).lower()}")
-    project_blocks = codex_preserved_project_blocks(existing)
-    if project_blocks:
+            lines.append(f"{key} = {format_toml_value(value)}")
+    if unmanaged_sections:
         lines.append("")
-        lines.append(project_blocks)
+        lines.append(unmanaged_sections)
     return "\n".join(lines).strip()
 
 
-def remove_named_toml_section(text: str, section_name: str) -> str:
-    lines = text.splitlines()
-    kept: list[str] = []
-    skipping = False
-    target = f"[{section_name}]"
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            skipping = stripped == target
-        if not skipping:
-            kept.append(line)
-    return "\n".join(kept).rstrip()
-
-
-def remove_root_toml_key(text: str, key: str) -> str:
-    kept: list[str] = []
-    in_section = False
-    prefix = f"{key} ="
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            in_section = True
-        if not in_section and stripped.startswith(prefix):
-            continue
-        kept.append(line)
-    return "\n".join(kept).rstrip()
-
-
-def remove_stale_codex_keys(text: str, config: AppConfig) -> str:
-    codex_model = getattr(config, "codex_model_id", "") or config.default_model_id
-    model_line = f'model = "{codex_model}"'
-    provider_line = 'model_provider = "shtu_proxy"'
-    lines = text.splitlines()
-    kept: list[str] = []
+def codex_unmanaged_config_parts(existing: str) -> tuple[str, str]:
+    lines = existing.splitlines()
+    blocks: list[str] = []
+    root_lines: list[str] = []
+    block: list[str] = []
+    current_header = ""
+    managed_root_keys = {"model", "model_provider", "sandbox_mode"}
     index = 0
     while index < len(lines):
-        current = lines[index].strip()
-        next_line = lines[index + 1].strip() if index + 1 < len(lines) else ""
-        previous = lines[index - 1].strip() if index > 0 else ""
-        if current == model_line and next_line == provider_line:
-            index += 2
-            continue
-        if current == provider_line and previous == model_line:
+        line = lines[index]
+        stripped = line.strip()
+        if is_toml_section_header(stripped):
+            if block and current_header and not is_managed_codex_section(current_header):
+                blocks.append("\n".join(block).rstrip())
+            current_header = toml_header_name(stripped)
+            block = [line]
             index += 1
             continue
-        kept.append(lines[index])
+        if current_header:
+            if not is_stale_model_selection_line(current_header, line):
+                block.append(line)
+        elif stripped and not stripped.startswith("#"):
+            key = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
+            if key not in managed_root_keys:
+                root_lines.append(line)
+        elif root_lines:
+            root_lines.append(line)
         index += 1
-    return "\n".join(kept).rstrip()
+    if block and current_header and not is_managed_codex_section(current_header):
+        blocks.append("\n".join(block).rstrip())
+    root = "\n".join(root_lines).strip()
+    sections = "\n\n".join(block for block in blocks if block.strip())
+    return root, sections
 
 
 def write_codex_config(config: AppConfig) -> Path:

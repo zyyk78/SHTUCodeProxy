@@ -1,5 +1,15 @@
 # Changelog
 
+## v3.2.25 - 2026-05-13
+
+Codex config preservation hardening release.
+
+### Fixed
+
+- Preserved unmanaged Codex root settings, MCP server blocks, unrelated profiles, project trust entries, and other Codex tables while still replacing the SHTU proxy provider/profile cleanly.
+- Added recovery for partially corrupted config files where stale root `model` or `model_provider` lines had been inserted under unrelated tables.
+- Preserved non-deprecated feature flags and Windows settings while migrating `codex_hooks` to `hooks`.
+
 ## v3.2.24 - 2026-05-13
 
 Codex sandbox configuration release.

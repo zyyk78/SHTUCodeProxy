@@ -435,6 +435,8 @@ def exercise_codex_config_writer(tmpdir: Path) -> None:
 
     config_file.write_text("\n".join([
         'model_provider = "custom"',
+        'approval_policy = "on-request"',
+        'model_context_window = 1000000',
         'model = "codex-model"',
         '',
         '[model_providers.custom]',
@@ -449,10 +451,20 @@ def exercise_codex_config_writer(tmpdir: Path) -> None:
         '[features]',
         'codex_hooks = true',
         'hooks = false',
+        'web_search = true',
         '[windows]',
         'sandbox = "read-only"',
+        'wsl_proxy = true',
         '[projects."C:\\\\Users\\\\Administrator"]',
         'trust_level = "trusted"',
+        '',
+        '[mcp_servers.filesystem]',
+        'command = "node"',
+        'args = ["server.js"]',
+        '',
+        '[profiles.work]',
+        'model_provider = "openai"',
+        'model = "gpt-5.5"',
         '',
         '[tui.model_availability_nux]',
         '"gpt-5.5" = 4',
@@ -483,7 +495,13 @@ def exercise_codex_config_writer(tmpdir: Path) -> None:
     if os.name == "nt":
         assert_true('[windows]' in repaired and 'sandbox = "elevated"' in repaired, "codex config writer should repair Windows sandbox mode")
     assert_true('[model_providers.custom]' not in repaired, "codex config writer should remove old direct custom provider")
-    assert_true('[tui.model_availability_nux]' not in repaired, "codex config writer should remove stale tui availability sections")
+    assert_true('approval_policy = "on-request"' in repaired, "codex config writer should preserve unmanaged root settings")
+    assert_true('model_context_window = 1000000' in repaired, "codex config writer should preserve unmanaged root numeric settings")
+    assert_true('web_search = true' in repaired, "codex config writer should preserve other feature flags")
+    assert_true('wsl_proxy = true' in repaired, "codex config writer should preserve other windows settings")
+    assert_true('[mcp_servers.filesystem]' in repaired, "codex config writer should preserve MCP server blocks")
+    assert_true('[profiles.work]' in repaired, "codex config writer should preserve unrelated profiles")
+    assert_true('[tui.model_availability_nux]' in repaired, "codex config writer should preserve unrelated Codex tables")
     assert_true("[model_providers.shtu_proxy]" in repaired, "codex config writer should recover with a clean proxy config")
 
     once_repaired = repaired
