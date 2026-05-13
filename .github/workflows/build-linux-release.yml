@@ -49,5 +49,16 @@ jobs:
         with:
           name: linux-release-assets
           path: |
-            release/SHTUCodeProxy-*-linux-*-python-launcher.tar.gz
+            release/SHTUCodeProxy-*-linux-*-python-launcher.tar.xz
             release/SHTUCodeProxy-*-linux-*
+
+      - name: Upload assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          files: |
+            release/SHTUCodeProxy-*-linux-*-python-launcher.tar.xz
+            release/SHTUCodeProxy-*-linux-*
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

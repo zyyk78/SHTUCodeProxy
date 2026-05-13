@@ -58,8 +58,8 @@ Usage:
 The bundled SHTUCodeProxy runtime includes Python, PyQt5, and Qt libraries.
 You do not need to install Python packages such as PyQt5 or PyInstaller.
 EOF
-  tar -czf "release/${APP_NAME}-python-launcher.tar.gz" -C build "$PACKAGE_ROOT"
-  echo "Python-launcher folder package complete: release/${APP_NAME}-python-launcher.tar.gz"
+  tar -cJf "release/${APP_NAME}-python-launcher.tar.xz" -C build "$PACKAGE_ROOT"
+  echo "Python-launcher folder package complete: release/${APP_NAME}-python-launcher.tar.xz"
 fi
 
 if [[ "$ONE_DIR_ONLY" != "1" ]]; then
