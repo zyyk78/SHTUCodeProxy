@@ -44,12 +44,10 @@ jobs:
       - name: Build Linux packages
         run: bash ./build_unix.sh
 
-      - name: Upload assets to release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.inputs.tag }}
-        run: |
-          gh release upload "$TAG" \
-            release/SHTUCodeProxy-*-linux-*-python-launcher.tar.gz \
-            release/SHTUCodeProxy-*-linux-* \
-            --clobber
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release-assets
+          path: |
+            release/SHTUCodeProxy-*-linux-*-python-launcher.tar.gz
+            release/SHTUCodeProxy-*-linux-*
