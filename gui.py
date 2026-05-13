@@ -20,9 +20,10 @@ from platform_utils import default_codex_auth_path, default_codex_config_path, i
 class ProxyApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("SHTUClaudeProxy - Guided Setup")
-        self.geometry("1280x900")
-        self.minsize(1040, 680)
+        self.title("SHTUCodeProxy 4.0.4 Preview")
+        self.geometry("1420x960")
+        self.minsize(1220, 780)
+        self.configure(bg="#ffffff")
         self.config_data = load_config()
         save_config(self.config_data)
         self.server: Optional[ThreadingHTTPServer] = None
@@ -69,27 +70,65 @@ class ProxyApp(tk.Tk):
 
     def configure_styles(self) -> None:
         style = ttk.Style(self)
-        style.configure("Primary.TButton", font=("Segoe UI", 10, "bold"), foreground="#0b3d91")
-        style.configure("Success.TButton", font=("Segoe UI", 10, "bold"), foreground="#0f6b2f")
-        style.configure("Warning.TButton", font=("Segoe UI", 10, "bold"), foreground="#9a4d00")
-        style.configure("StepTitle.TLabel", font=("Segoe UI", 10, "bold"))
-        style.configure("Hint.TLabel", foreground="#555555")
-        style.configure("Danger.TLabel", foreground="#b00020", font=("Segoe UI", 10, "bold"))
-        style.configure("Danger.TButton", font=("Segoe UI", 10, "bold"), foreground="#b00020")
-        style.configure("Status.TLabel", font=("Segoe UI", 10, "bold"), foreground="#0f6b2f")
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        font = "Segoe UI"
+        bg = "#ffffff"
+        panel = "#f8fbff"
+        card = "#fbfdff"
+        chrome = "#f3f8ff"
+        accent = "#1677ff"
+        steel = "#8fb4e6"
+        style.configure(".", font=(font, 10), background=bg, foreground="#1d1d1f")
+        style.configure("TFrame", background=bg)
+        style.configure("Shell.TFrame", background=bg)
+        style.configure("Card.TFrame", background=card, relief="solid", borderwidth=2, bordercolor="#8fb4e6", lightcolor="#ffffff", darkcolor="#8fb4e6")
+        style.configure("Chrome.TFrame", background=chrome, relief="solid", borderwidth=2, bordercolor="#8fb4e6", lightcolor="#ffffff", darkcolor="#8fb4e6")
+        style.configure("TLabel", background=bg, foreground="#1d1d1f")
+        style.configure("Card.TLabel", background=card, foreground="#1d1d1f")
+        style.configure("TLabelframe", background=panel, bordercolor="#8fb4e6", lightcolor="#ffffff", darkcolor="#8fb4e6", relief="solid", borderwidth=2)
+        style.configure("TLabelframe.Label", background=bg, foreground="#1d1d1f", font=(font, 12, "bold"))
+        style.configure("TEntry", fieldbackground="#ffffff", bordercolor="#b5cbe6", lightcolor="#ffffff", darkcolor="#7f9cc0", padding=8, relief="solid")
+        style.map("TEntry", fieldbackground=[("readonly", "#f4f9ff")], foreground=[("readonly", "#14345a")])
+        style.configure("TCombobox", fieldbackground="#f4faff", background="#e5f1ff", foreground="#12365f", bordercolor=steel, lightcolor="#ffffff", darkcolor="#668bb8", arrowsize=17, padding=8, relief="solid")
+        style.map("TCombobox", fieldbackground=[("readonly", "#f2f8ff"), ("focus", "#ffffff")], background=[("readonly", "#e7f2ff"), ("active", "#ffffff")], foreground=[("readonly", "#12365f")])
+        style.configure("TButton", font=(font, 10, "bold"), foreground="#163f68", background="#fbfdff", bordercolor="#94b5dd", lightcolor="#ffffff", darkcolor="#6688b1", relief="raised", padding=(14, 8))
+        style.map("TButton", background=[("active", "#ffffff"), ("pressed", "#e9f4ff")], foreground=[("active", "#0066cc")])
+        style.configure("Primary.TButton", font=(font, 10, "bold"), foreground="#ffffff", background=accent, bordercolor=accent, lightcolor="#8ac4ff", darkcolor="#0751b5", relief="raised", focusthickness=0, padding=(16, 8))
+        style.map("Primary.TButton", background=[("active", "#3b91ff")], foreground=[("active", "#ffffff")])
+        style.configure("Success.TButton", font=(font, 10, "bold"), foreground="#ffffff", background="#18b889", bordercolor="#18b889", lightcolor="#7ee3c4", darkcolor="#08785d", relief="raised", padding=(16, 8))
+        style.map("Success.TButton", background=[("active", "#21c99a")], foreground=[("active", "#ffffff")])
+        style.configure("Warning.TButton", font=(font, 10, "bold"), foreground="#ffffff", background="#5c63f1", bordercolor="#5c63f1", lightcolor="#9da2ff", darkcolor="#3439a8", relief="raised", padding=(14, 8))
+        style.configure("Danger.TButton", font=(font, 10, "bold"), foreground="#b00020", background="#fff5f7", bordercolor="#ffc8d1", lightcolor="#ffffff", darkcolor="#e9a6b2", relief="raised", padding=(14, 8))
+        style.configure("Mode.TRadiobutton", background=chrome, foreground="#172033", font=(font, 18, "bold"), padding=(38, 20), indicatorcolor=accent, relief="solid", borderwidth=2, lightcolor="#ffffff", darkcolor="#8fb4e6")
+        style.map("Mode.TRadiobutton", background=[("active", "#ffffff"), ("selected", "#eef5ff")], foreground=[("selected", accent)])
+        style.configure("Panel.TLabel", background=panel, foreground="#1d1d1f")
+        style.configure("StepTitle.TLabel", background=card, foreground="#1d1d1f", font=(font, 11, "bold"))
+        style.configure("PanelTitle.TLabel", background=panel, foreground="#1d1d1f", font=(font, 11, "bold"))
+        style.configure("Hint.TLabel", background=bg, foreground="#667085")
+        style.configure("PanelHint.TLabel", background=panel, foreground="#667085")
+        style.configure("CardHint.TLabel", background=card, foreground="#667085")
+        style.configure("Danger.TLabel", background=bg, foreground="#b00020", font=(font, 10, "bold"))
+        style.configure("Status.TLabel", background=card, font=(font, 10, "bold"), foreground="#0066cc")
+        style.configure("Treeview", background="#fbfdff", fieldbackground="#fbfdff", foreground="#1d1d1f", bordercolor="#9fb7da", lightcolor="#ffffff", darkcolor="#8da7c9", rowheight=28, relief="ridge")
+        style.configure("Treeview.Heading", background="#eef6ff", foreground="#18395f", font=(font, 10, "bold"), relief="raised", bordercolor="#9fb7da", lightcolor="#ffffff", darkcolor="#86a4ca")
+        style.map("Treeview", background=[("selected", "#dceeff")], foreground=[("selected", "#082f60")])
+        style.configure("Vertical.TScrollbar", background="#a9c4ec", troughcolor="#f6faff", bordercolor="#e2ecfb", arrowsize=20, width=20, relief="raised")
 
     def create_widgets(self) -> None:
-        outer = ttk.Frame(self)
+        outer = ttk.Frame(self, style="Shell.TFrame")
         outer.pack(fill=tk.BOTH, expand=True)
 
-        canvas = tk.Canvas(outer, highlightthickness=0)
+        canvas = tk.Canvas(outer, highlightthickness=0, bg="#ffffff")
         self.scroll_canvas = canvas
-        scrollbar = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
+        scrollbar = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview, style="Vertical.TScrollbar")
         canvas.configure(yscrollcommand=scrollbar.set)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        root = ttk.Frame(canvas, padding=12)
+        root = ttk.Frame(canvas, padding=(42, 36, 42, 30), style="Shell.TFrame")
         root_window = canvas.create_window((0, 0), window=root, anchor="nw")
 
         def update_scroll_region(_event: object) -> None:
@@ -105,28 +144,14 @@ class ProxyApp(tk.Tk):
         canvas.bind("<Configure>", update_root_width)
         canvas.bind_all("<MouseWheel>", on_mousewheel)
 
-        intro_frame = ttk.LabelFrame(root, text="Recommended Order")
-        intro_frame.pack(fill=tk.X, pady=(0, 10))
-        intro_frame.columnconfigure(0, weight=1)
-        ttk.Label(
-            intro_frame,
-            text="Follow 1 -> 2 -> 3 for first-time setup. After that, usually only Step 3 is needed.",
-            style="StepTitle.TLabel",
-        ).grid(row=0, column=0, padx=10, pady=(8, 2), sticky="w")
-        ttk.Label(
-            intro_frame,
-            text="Advanced buttons are optional. You can ignore them for normal daily use.",
-            style="Hint.TLabel",
-        ).grid(row=1, column=0, padx=10, pady=(0, 8), sticky="w")
+        mode_frame = ttk.Frame(root, style="Chrome.TFrame", padding=(28, 24))
+        mode_frame.pack(fill=tk.X, pady=(0, 24), ipady=6)
+        mode_frame.columnconfigure(0, weight=1)
+        mode_frame.columnconfigure(1, weight=1)
+        ttk.Radiobutton(mode_frame, text="Claude Code", variable=self.client_mode_var, value="claude", command=self.refresh_mode_hint, style="Mode.TRadiobutton").grid(row=0, column=0, padx=(0, 10), sticky="ew")
+        ttk.Radiobutton(mode_frame, text="Codex CLI / Desktop", variable=self.client_mode_var, value="codex", command=self.refresh_mode_hint, style="Mode.TRadiobutton").grid(row=0, column=1, padx=(10, 0), sticky="ew")
 
-        mode_frame = ttk.LabelFrame(root, text="Client Mode")
-        mode_frame.pack(fill=tk.X, pady=(0, 10))
-        ttk.Label(mode_frame, text="Choose which client configuration to write. The proxy can serve both Claude and Codex at the same time.", style="Hint.TLabel").pack(side=tk.LEFT, padx=8, pady=8)
-        ttk.Radiobutton(mode_frame, text="Claude Code", variable=self.client_mode_var, value="claude", command=self.refresh_mode_hint).pack(side=tk.RIGHT, padx=8, pady=8)
-        ttk.Radiobutton(mode_frame, text="Codex CLI/Desktop", variable=self.client_mode_var, value="codex", command=self.refresh_mode_hint).pack(side=tk.RIGHT, padx=8, pady=8)
-
-        actions = ttk.LabelFrame(root, text="Quick Start")
-        actions.pack(fill=tk.X, pady=(0, 10))
+        actions = self.create_outlined_labelframe(root, "Quick Start", pady=(0, 20))
         for column in range(4):
             actions.columnconfigure(column, weight=1)
 
@@ -168,18 +193,16 @@ class ProxyApp(tk.Tk):
             "Success.TButton",
         )
 
-        status_frame = ttk.LabelFrame(root, text="Connection, Safety, and Recovery")
-        status_frame.pack(fill=tk.X, pady=(0, 10))
+        status_frame = self.create_outlined_labelframe(root, "Connection, Safety, and Recovery", pady=(0, 20))
         status_frame.columnconfigure(0, weight=1)
-        ttk.Label(status_frame, textvariable=self.connection_status_var, style="Status.TLabel").grid(row=0, column=0, padx=8, pady=6, sticky="w")
+        ttk.Label(status_frame, textvariable=self.connection_status_var, style="PanelTitle.TLabel").grid(row=0, column=0, padx=8, pady=6, sticky="w")
         ttk.Button(status_frame, text="Refresh Status", command=self.refresh_connection_status).grid(row=0, column=1, padx=4, pady=6, sticky="ew")
         ttk.Button(status_frame, text="Check Codex Health", command=self.check_codex_health).grid(row=0, column=2, padx=4, pady=6, sticky="ew")
         ttk.Button(status_frame, text="Restore Recent Client Backup", command=lambda: self.restore_client_config(False)).grid(row=0, column=3, padx=4, pady=6, sticky="ew")
         ttk.Button(status_frame, text="Restore Original Client Config", command=lambda: self.restore_client_config(True), style="Danger.TButton").grid(row=0, column=4, padx=4, pady=6, sticky="ew")
-        ttk.Label(status_frame, text="Backups cover the selected client mode: Claude settings or Codex config/auth.", style="Hint.TLabel").grid(row=1, column=0, columnspan=5, padx=8, pady=(0, 6), sticky="w")
+        ttk.Label(status_frame, text="Backups cover the selected client mode: Claude settings or Codex config/auth.", style="PanelHint.TLabel").grid(row=1, column=0, columnspan=5, padx=8, pady=(0, 6), sticky="w")
 
-        server_frame = ttk.LabelFrame(root, text="Server")
-        server_frame.pack(fill=tk.X)
+        server_frame = self.create_outlined_labelframe(root, "Server")
         for column in range(8):
             server_frame.columnconfigure(column, weight=1 if column in (1, 3, 5, 7) else 0)
 
@@ -204,14 +227,13 @@ class ProxyApp(tk.Tk):
         ttk.Entry(server_frame, textvariable=self.codex_auth_path_var).grid(row=4, column=1, columnspan=6, padx=6, pady=8, sticky="ew")
         ttk.Button(server_frame, text="Browse", command=self.browse_codex_auth_path).grid(row=4, column=7, padx=6, pady=8, sticky="ew")
 
-        env_frame = ttk.LabelFrame(root, text="Claude Model Routing")
-        env_frame.pack(fill=tk.X, pady=(6, 0))
+        env_frame = self.create_outlined_labelframe(root, "Claude Model Routing", pady=(16, 0))
         for column in range(5):
             env_frame.columnconfigure(column, weight=1)
         ttk.Label(
             env_frame,
             text="Choose model routing. Defaults can all be the same.",
-            style="Hint.TLabel",
+            style="PanelHint.TLabel",
         ).grid(row=0, column=0, columnspan=5, padx=8, pady=(6, 2), sticky="w")
         model_routes = [
             ("Main Model", "ANTHROPIC_MODEL"),
@@ -240,11 +262,11 @@ class ProxyApp(tk.Tk):
         sandbox_combo = ttk.Combobox(codex_cell, textvariable=self.codex_sandbox_mode_var, values=CODEX_SANDBOX_MODES, state="readonly", width=20)
         sandbox_combo.grid(row=0, column=3, sticky="w")
         sandbox_combo.bind("<<ComboboxSelected>>", self.on_codex_sandbox_changed)
-        ttk.Label(codex_cell, text="Writes Codex model, auth key, sandbox_mode, and hooks.", style="Hint.TLabel").grid(row=0, column=4, padx=8, sticky="w")
-        ttk.Label(env_frame, textvariable=self.route_summary_var, style="StepTitle.TLabel").grid(row=3, column=0, columnspan=5, padx=8, pady=(2, 6), sticky="w")
+        ttk.Label(codex_cell, text="Writes Codex model, auth key, sandbox_mode, and hooks.", style="PanelHint.TLabel").grid(row=0, column=4, padx=8, sticky="w")
+        ttk.Label(env_frame, textvariable=self.route_summary_var, style="PanelTitle.TLabel").grid(row=3, column=0, columnspan=5, padx=8, pady=(2, 6), sticky="w")
 
         body = ttk.Frame(root)
-        body.pack(fill=tk.BOTH, expand=True, pady=(8, 6))
+        body.pack(fill=tk.BOTH, expand=True, pady=(14, 8))
         body.columnconfigure(0, weight=1)
         body.columnconfigure(1, weight=2)
         body.rowconfigure(0, weight=1)
@@ -311,20 +333,34 @@ class ProxyApp(tk.Tk):
         ttk.Button(status_frame, text="Stop Proxy", command=self.stop_proxy).pack(side=tk.RIGHT, padx=4)
         ttk.Button(status_frame, text="Start Proxy Only", command=self.start_proxy).pack(side=tk.RIGHT, padx=4)
 
-        advanced = ttk.LabelFrame(root, text="Advanced / Optional")
-        advanced.pack(fill=tk.X, pady=(6, 0))
+        advanced = self.create_outlined_labelframe(root, "Advanced / Optional", pady=(6, 0))
         ttk.Label(
             advanced,
             text="Optional: install a manual PowerShell launcher or copy env vars. Most users do not need these.",
-            style="Hint.TLabel",
+            style="PanelHint.TLabel",
         ).pack(side=tk.LEFT, padx=8, pady=8)
         ttk.Button(advanced, text="Install Launch Script", command=self.install_launch_script).pack(side=tk.RIGHT, padx=4, pady=8)
         ttk.Button(advanced, text="Copy Claude Config", command=self.copy_claude_config).pack(side=tk.RIGHT, padx=4, pady=8)
 
-        log_frame = ttk.LabelFrame(root, text="Logs")
-        log_frame.pack(fill=tk.BOTH, expand=False, pady=(10, 0))
-        self.log_text = tk.Text(log_frame, height=5, wrap=tk.WORD)
+        log_frame = self.create_outlined_labelframe(root, "Logs", pady=(10, 0))
+        self.log_text = tk.Text(
+            log_frame,
+            height=5,
+            wrap=tk.WORD,
+            bg="#fbfdff",
+            fg="#1d1d1f",
+            relief=tk.RIDGE,
+            bd=3,
+            highlightthickness=1,
+            highlightbackground="#9fb7da",
+            insertbackground="#1677ff",
+        )
         self.log_text.pack(fill=tk.BOTH, expand=True)
+
+    def create_outlined_labelframe(self, parent: ttk.Frame, text: str, pady: tuple[int, int] | int = (0, 0)) -> ttk.LabelFrame:
+        frame = ttk.LabelFrame(parent, text=text)
+        frame.pack(fill=tk.X, pady=pady, ipady=10)
+        return frame
 
     def create_step_card(
         self,
@@ -336,12 +372,12 @@ class ProxyApp(tk.Tk):
         command: object,
         button_style: str,
     ) -> None:
-        card = ttk.Frame(parent, padding=6)
-        card.grid(row=0, column=column, sticky="nsew", padx=6, pady=6)
+        card = ttk.Frame(parent, padding=(18, 16), style="Card.TFrame")
+        card.grid(row=0, column=column, sticky="nsew", padx=12, pady=14)
         card.columnconfigure(0, weight=1)
-        card.rowconfigure(1, weight=1, minsize=36)
+        card.rowconfigure(1, weight=1, minsize=44)
         ttk.Label(card, text=title, style="StepTitle.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(card, text=description, style="Hint.TLabel", wraplength=280).grid(row=1, column=0, sticky="new", pady=(2, 6))
+        ttk.Label(card, text=description, style="CardHint.TLabel", wraplength=280).grid(row=1, column=0, sticky="new", pady=(4, 10))
         ttk.Button(card, text=button_text, command=command, style=button_style).grid(row=2, column=0, sticky="sew")
 
     def refresh_model_list(self) -> None:
@@ -528,7 +564,7 @@ class ProxyApp(tk.Tk):
             return
         messagebox.showinfo(
             "First-time setup",
-            "Welcome to SHTUClaudeProxy.\n\n"
+            "Welcome to SHTUCodeProxy.\n\n"
             "For first-time use, you usually only need to:\n"
             "1. Paste your GenAI API Key in Model Config.\n"
             "2. Confirm Base URL / API Format / Upstream Model.\n"
@@ -845,7 +881,7 @@ class ProxyApp(tk.Tk):
         claude_path = self.config_data.claude_path or "claude"
         try:
             launch_claude(claude_path, env_values)
-            self.append_log("Launched Claude Code with SHTUClaudeProxy environment")
+            self.append_log("Launched Claude Code with SHTUCodeProxy environment")
         except Exception as exc:
             messagebox.showerror("Launch failed", str(exc))
 

@@ -1,4 +1,36 @@
-# Changelog
+﻿# Changelog
+
+## v4.1.0 - 2026-05-13
+
+Stable PyQt5 iOS-style GUI release.
+
+### Changed
+
+- Prevented combo boxes from changing values on mouse wheel unless the control is focused or opened.
+- Tightened the Advanced / Optional card and improved button alignment.
+- Switched Models to a table-style view with headers, row selection, grid lines, and alternating rows.
+- Replaced the application icon with the transparent `myImage2` icon.
+- Promoted the accepted PyQt5 GUI preview to the stable 4.1.0 release.
+
+## v4.0.5-preview - 2026-05-13
+
+iOS-style PyQt5 GUI preview.
+
+### Changed
+
+- Rebuilt the preview GUI with PyQt5 while preserving the existing SHTUCodeProxy workflow.
+- Added iOS-inspired QSS styling with system gray background, metallic navigation bar, glass cards, rounded controls, and blue-white accent colors.
+- Added real `QGraphicsDropShadowEffect` shadows on cards and focus glow effects on text inputs.
+
+## v4.0.4-preview - 2026-05-13
+
+Metallic Apple-inspired GUI preview refinement.
+
+### Changed
+
+- Updated the preview to SHTUCodeProxy 4.0.4.
+- Switched the preview canvas to pure white and tuned the surrounding palette to pearl white, soft blue, and silver.
+- Reduced gray-looking controls by using blue-tinted comboboxes plus raised white/silver button surfaces with stronger relief.
 
 ## v3.5.1 - 2026-05-13
 
@@ -281,3 +313,5 @@ Stable guided-setup release.
 - Moved advanced actions into a separate optional section.
 - Improved non-streaming and streaming upstream error reporting.
 - Updated the release zip with the latest Windows build.
+
+

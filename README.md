@@ -2,13 +2,13 @@
 
 > **Important:** GPT-series models should use the `responses` API Format.
 
-Current development version: **v3.5.1**
+Current development version: **v4.1.0**
 
-SHTUClaudeProxy is a cross-platform local proxy for connecting **Claude Code**, **Codex CLI**, and **Codex Desktop** to the ShanghaiTech University campus **GenAI Response API** or compatible local model endpoints.
+SHTUCodeProxy is a cross-platform local proxy for connecting **Claude Code**, **Codex CLI**, and **Codex Desktop** to the ShanghaiTech University campus **GenAI Response API** or compatible local model endpoints.
 
-This tool was created by **sunyb, ShanghaiTech University Library and Information Center** for internal campus use. It helps users access Claude Code through the university GenAI API by translating Claude Code's Anthropic Messages API traffic into upstream requests and converting streaming responses back into Claude Code-compatible Server-Sent Events. v3.5.1 also exposes an OpenAI Responses-compatible `/v1/responses` endpoint for Codex clients.
+This tool was created by **sunyb, ShanghaiTech University Library and Information Center** for internal campus use. It helps users access Claude Code through the university GenAI API by translating Claude Code's Anthropic Messages API traffic into upstream requests and converting streaming responses back into Claude Code-compatible Server-Sent Events. v4.1.0 also exposes an OpenAI Responses-compatible `/v1/responses` endpoint for Codex clients.
 
-> Note: SHTUClaudeProxy is a local proxy tool created by sunyb for ShanghaiTech campus GenAI API access from Claude Code.
+> Note: SHTUCodeProxy is a local proxy tool created by sunyb for ShanghaiTech campus GenAI API access from Claude Code.
 
 <img width="1259" height="914" alt="image" src="https://github.com/user-attachments/assets/059f2446-43c0-4984-980a-7f50e38ee6cb" />
 <img width="1258" height="257" alt="image" src="https://github.com/user-attachments/assets/48f637fc-042d-4738-8ebe-2949a12fe067" />
@@ -36,12 +36,12 @@ Codex clients expect an OpenAI Responses-compatible endpoint such as:
 POST /v1/responses
 ```
 
-SHTUClaudeProxy bridges both client formats:
+SHTUCodeProxy bridges both client formats:
 
 ```text
 Claude Code
   -> Anthropic Messages request
-  -> SHTUClaudeProxy on 127.0.0.1:8082
+  -> SHTUCodeProxy on 127.0.0.1:8082
   -> GenAI Response API
   -> OpenAI Responses SSE
   -> Anthropic-style SSE
@@ -49,7 +49,7 @@ Claude Code
 
 Codex CLI/Desktop
   -> OpenAI Responses request
-  -> SHTUClaudeProxy on 127.0.0.1:8082
+  -> SHTUCodeProxy on 127.0.0.1:8082
   -> Responses or Chat Completions upstream
   -> OpenAI Responses SSE
   -> Codex
@@ -125,7 +125,7 @@ For normal conversational and many coding-assistance workflows, the proxy can be
 Use the recommended single-file release:
 
 ```text
-SHTUClaudeProxy-v1.6.0-windows-x64.exe
+SHTUCodeProxy-v1.6.0-windows-x64.exe
 ```
 
 You do **not** need to install Python, pip, PyInstaller, or any Python packages. The single-file EXE bundles the Python runtime and required dependencies.
@@ -163,14 +163,14 @@ If Claude Code is installed with npm, the default executable is usually:
 
 The GUI tries to detect this automatically.
 
-For Codex CLI/Desktop, install and sign in to Codex separately. SHTUClaudeProxy only writes the local Codex provider/profile and serves the model endpoint.
+For Codex CLI/Desktop, install and sign in to Codex separately. SHTUCodeProxy only writes the local Codex provider/profile and serves the model endpoint.
 
-### 2. Start SHTUClaudeProxy
+### 2. Start SHTUCodeProxy
 
 Recommended download for normal users:
 
 ```text
-SHTUClaudeProxy-v3.5.1-windows-x64.exe
+SHTUCodeProxy-v4.1.0-windows-x64.exe
 ```
 
 Double-click it directly. No Python installation is required.
@@ -178,10 +178,10 @@ Double-click it directly. No Python installation is required.
 Alternative portable zip package:
 
 ```text
-SHTUClaudeProxy-v3.5.1-windows-x64.zip
+SHTUCodeProxy-v4.1.0-windows-x64.zip
 ```
 
-If you use the zip package, extract the whole folder and run `SHTUClaudeProxy.exe` inside it.
+If you use the zip package, extract the whole folder and run `SHTUCodeProxy.exe` inside it.
 
 ### 3. Configure Server Settings
 
@@ -278,7 +278,7 @@ Use `Claude Model Routing` to choose which configured Model ID is written to eac
 
 `Current Main Model` shows the value used for `ANTHROPIC_MODEL`. To change it, select a different `Main Model` in `Claude Model Routing`.
 
-`ANTHROPIC_AUTH_TOKEN` is only a local placeholder for Claude Code. The real upstream API key is stored in SHTUClaudeProxy's local app config and is used only by the proxy when forwarding requests to GenAI Response API.
+`ANTHROPIC_AUTH_TOKEN` is only a local placeholder for Claude Code. The real upstream API key is stored in SHTUCodeProxy's local app config and is used only by the proxy when forwarding requests to GenAI Response API.
 
 ### 6. Start Proxy
 
@@ -308,7 +308,7 @@ If starting manually, make sure the proxy is already running.
 
 ## Chat Completions API Format
 
-SHTUClaudeProxy supports two upstream API formats per model:
+SHTUCodeProxy supports two upstream API formats per model:
 
 | API Format | Upstream endpoint style | Streaming delta parsed from |
 | --- | --- | --- |
@@ -365,7 +365,7 @@ Add a custom provider to your Codex `config.toml`:
 
 ```toml
 [model_providers.shtu_proxy]
-name = "SHTUClaudeProxy"
+name = "SHTUCodeProxy"
 base_url = "http://127.0.0.1:8082/v1"
 wire_api = "responses"
 requires_openai_auth = true
@@ -384,33 +384,33 @@ Write Codex auth at `%USERPROFILE%\.codex\auth.json`:
 }
 ```
 
-The GUI writes both files for you in `Codex CLI/Desktop` mode. It uses the selected `Codex Model` entry's upstream API key as `OPENAI_API_KEY`, while the proxy still uses SHTUClaudeProxy's own model table when forwarding requests. If a configured model uses `api_format: "chat_completions"`, Codex still sends Responses requests to the proxy; the proxy converts them to Chat Completions before calling that upstream.
+The GUI writes both files for you in `Codex CLI/Desktop` mode. It uses the selected `Codex Model` entry's upstream API key as `OPENAI_API_KEY`, while the proxy still uses SHTUCodeProxy's own model table when forwarding requests. If a configured model uses `api_format: "chat_completions"`, Codex still sends Responses requests to the proxy; the proxy converts them to Chat Completions before calling that upstream.
 
 Codex sandbox mode is written as the root-level `sandbox_mode` value in `config.toml`. The GUI supports Codex's three CLI modes: `read-only`, `workspace-write`, and `danger-full-access`. It also writes `[features] hooks = true`; older `[features] codex_hooks = true` entries are removed because Codex now treats `codex_hooks` as deprecated.
 
-The GUI also includes a `Connection, Safety, and Recovery` panel. It shows whether the configured proxy port is stopped, already used by another process, or started by this app. `danger-full-access` requires a warning confirmation before it is saved. Recovery buttons can restore the latest backup or the original pre-SHTUClaudeProxy client config for the selected client mode: Claude Code restores `settings.json`, while Codex restores both `config.toml` and `auth.json`.
+The GUI also includes a `Connection, Safety, and Recovery` panel. It shows whether the configured proxy port is stopped, already used by another process, or started by this app. `danger-full-access` requires a warning confirmation before it is saved. Recovery buttons can restore the latest backup or the original pre-SHTUCodeProxy client config for the selected client mode: Claude Code restores `settings.json`, while Codex restores both `config.toml` and `auth.json`.
 
 Use `Check Codex Health` after changing Codex settings. It validates `config.toml` syntax, `auth.json`, `shtu_proxy` provider/profile, `[features] hooks = true`, sandbox mode, project trust entries, and MCP server blocks.
 
 ### MCP and Tool Use
 
-Codex MCP servers are configured in Codex itself, not in SHTUClaudeProxy. The proxy only sees the model-facing Responses request that Codex produces after loading MCP tools.
+Codex MCP servers are configured in Codex itself, not in SHTUCodeProxy. The proxy only sees the model-facing Responses request that Codex produces after loading MCP tools.
 
-Supported v3.5.1 tool flow:
+Supported v4.1.0 tool flow:
 
 ```text
 Codex MCP server
   -> Codex Responses tools
-  -> SHTUClaudeProxy /v1/responses
+  -> SHTUCodeProxy /v1/responses
   -> upstream Responses function_call, or converted Chat Completions tool_calls
-  -> SHTUClaudeProxy Responses function_call events
+  -> SHTUCodeProxy Responses function_call events
   -> Codex executes the MCP tool
   -> Codex sends function_call_output on the next /v1/responses request
 ```
 
 This means MCP tool definitions and `function_call_output` history are preserved for Responses upstreams and converted for Chat Completions upstreams.
 
-Codex skills are also client-side. As long as Codex turns a skill into prompt context, MCP tools, or Responses tool definitions, SHTUClaudeProxy preserves that context and tool flow through the same `/v1/responses` path.
+Codex skills are also client-side. As long as Codex turns a skill into prompt context, MCP tools, or Responses tool definitions, SHTUCodeProxy preserves that context and tool flow through the same `/v1/responses` path.
 
 ## Multiple Models
 
@@ -466,14 +466,14 @@ Or install PyInstaller automatically:
 Outputs:
 
 ```text
-release\SHTUClaudeProxy-v1.6.0-windows-x64.exe
-release\SHTUClaudeProxy-windows-x64.zip
-dist\SHTUClaudeProxy\SHTUClaudeProxy.exe
+release\SHTUCodeProxy-v1.6.0-windows-x64.exe
+release\SHTUCodeProxy-windows-x64.zip
+dist\SHTUCodeProxy\SHTUCodeProxy.exe
 ```
 
-Use `release\SHTUClaudeProxy-v1.6.0-windows-x64.exe` for normal users. It is a single-file executable and does not require Python or the `_internal` folder.
+Use `release\SHTUCodeProxy-v1.6.0-windows-x64.exe` for normal users. It is a single-file executable and does not require Python or the `_internal` folder.
 
-Use `release\SHTUClaudeProxy-windows-x64.zip` as the Windows portable folder package. If you distribute the zip package, users must extract the whole folder because the `_internal` runtime folder is required by the folder build.
+Use `release\SHTUCodeProxy-windows-x64.zip` as the Windows portable folder package. If you distribute the zip package, users must extract the whole folder because the `_internal` runtime folder is required by the folder build.
 
 For Linux/macOS packaging from source, run:
 
@@ -546,8 +546,8 @@ Windows users should normally download the single-file EXE from the Release page
 The Linux/macOS source package should unpack into its own directory:
 
 ```bash
-unzip SHTUClaudeProxy-v1.8.0-source-linux-macos.zip
-cd SHTUClaudeProxy-v1.8.0-source-linux-macos
+unzip SHTUCodeProxy-v1.8.0-source-linux-macos.zip
+cd SHTUCodeProxy-v1.8.0-source-linux-macos
 ```
 
 Run the smoke test first:
@@ -560,7 +560,7 @@ python3 smoke_test.py
 Expected output:
 
 ```text
-SHTUClaudeProxy smoke test passed
+SHTUCodeProxy smoke test passed
 ```
 
 ### 2. Configure API Key and Model
@@ -632,7 +632,7 @@ On Linux servers without a local desktop, use X11 forwarding:
 
 ```bash
 ssh -X user@host
-cd SHTUClaudeProxy-v1.8.0-source-linux-macos
+cd SHTUCodeProxy-v1.8.0-source-linux-macos
 python3 app.py
 ```
 
@@ -746,7 +746,7 @@ Cause: Claude Code is pointing to `http://127.0.0.1:8082`, but the local proxy i
 
 Fix:
 
-1. Open SHTUClaudeProxy.
+1. Open SHTUCodeProxy.
 2. Click `Start Proxy`.
 3. Confirm status shows `Running on http://127.0.0.1:8082`.
 4. Restart Claude Code.
@@ -815,5 +815,7 @@ Purpose: provide a convenient local bridge for ShanghaiTech campus GenAI Respons
 ## License
 
 MIT License. See `LICENSE`.
+
+
 
 

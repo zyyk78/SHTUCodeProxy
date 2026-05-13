@@ -21,7 +21,7 @@ if ($InstallDeps) {
 
 New-Item -ItemType Directory -Force "$Root\release" | Out-Null
 
-$ReleaseName = "SHTUClaudeProxy-v$Version"
+$ReleaseName = "SHTUCodeProxy-v$Version"
 $OneFileName = "$ReleaseName-windows-x64"
 $OneDirZip = "$Root\release\$OneFileName.zip"
 $SourceZip = "$Root\release\$ReleaseName-source-linux-macos.zip"
@@ -32,20 +32,23 @@ if (-not $OneFileOnly) {
   python -m PyInstaller `
     --noconfirm `
     --clean `
-    --name SHTUClaudeProxy `
+    --name SHTUCodeProxy `
     --windowed `
+    --icon "assets\shtucodeproxy.ico" `
+    --add-data "assets;assets" `
     --add-data "proxy.py;." `
+    --add-data "pyqt_gui.py;." `
     --add-data "config_store.py;." `
     --add-data "safe_io.py;." `
     app.py
 
   Compress-Archive `
-    -Path "$Root\dist\SHTUClaudeProxy\*" `
+    -Path "$Root\dist\SHTUCodeProxy\*" `
     -DestinationPath $OneDirZip `
     -Force
 
   Write-Host ""
-  Write-Host "Folder build complete: $Root\dist\SHTUClaudeProxy\SHTUClaudeProxy.exe"
+  Write-Host "Folder build complete: $Root\dist\SHTUCodeProxy\SHTUCodeProxy.exe"
   Write-Host "Zip package complete: $OneDirZip"
 }
 
@@ -56,7 +59,10 @@ if (-not $OneDirOnly) {
     --onefile `
     --name $OneFileName `
     --windowed `
+    --icon "assets\shtucodeproxy.ico" `
+    --add-data "assets;assets" `
     --add-data "proxy.py;." `
+    --add-data "pyqt_gui.py;." `
     --add-data "config_store.py;." `
     --add-data "safe_io.py;." `
     app.py
@@ -97,7 +103,7 @@ if (-not $OneDirOnly -and -not $OneFileOnly) {
     -Force
 
   @(
-    "SHTUClaudeProxy v$Version release assets",
+    "SHTUCodeProxy v$Version release assets",
     "",
     "Recommended Windows package:",
     "- $OneFileName.exe",

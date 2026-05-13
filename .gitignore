@@ -43,12 +43,19 @@ backups/
 # Smoke test scratch
 .smoke_tmp/
 .proxy_probe/
+reference_page.html
+reference_styles.css
+myImage*.jpg
+assets/*-preview.png
+assets/myImage2-transparent.ico
 
 # Versioned local release binaries are uploaded as GitHub Release assets,
 # not committed to git history.
 release/*.exe
 release/SHTUClaudeProxy-v*-windows-x64.zip
 release/SHTUClaudeProxy-v*-source-linux-macos.zip
+release/SHTUCodeProxy-v*-windows-x64.zip
+release/SHTUCodeProxy-v*-source-linux-macos.zip
 release/README-release-v*.txt
 release/SHA256SUMS.txt
 

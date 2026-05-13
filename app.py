@@ -20,6 +20,6 @@ if __name__ == "__main__":
         print("  python cli.py serve")
         raise SystemExit(2)
 
-    from gui import ProxyApp
+    from pyqt_gui import run
 
-    ProxyApp().mainloop()
+    raise SystemExit(run())
