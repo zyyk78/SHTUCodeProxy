@@ -273,6 +273,39 @@ def exercise_model_suffix_routing() -> None:
     assert_true(routed_direct.model_id == "deepseek-pro", "exact model ID should beat upstream model alias matches")
 
 
+def exercise_deleted_model_route_cleanup(tmpdir: Path) -> None:
+    config = make_config(tmpdir)
+    deleted_model_id = "temp-model"
+    config.models.append(ModelConfig(
+        name="Temporary Model",
+        model_id=deleted_model_id,
+        base_url="https://example.invalid/v1/responses",
+        api_key="",
+        upstream_model=deleted_model_id,
+        api_format="responses",
+    ))
+    config.default_model_id = deleted_model_id
+    config.codex_model_id = deleted_model_id
+    config.model_env = {key: deleted_model_id for key in MODEL_ENV_KEYS}
+    config.models = [model for model in config.models if model.model_id != deleted_model_id]
+    remaining_ids = {model.model_id for model in config.models}
+    fallback = config.models[0].model_id
+    config.model_env = {
+        key: value if value in remaining_ids else fallback
+        for key, value in config.model_env.items()
+    }
+    if config.default_model_id not in remaining_ids:
+        config.default_model_id = fallback
+    if config.codex_model_id not in remaining_ids:
+        config.codex_model_id = fallback
+    save_config(config, tmpdir / "config.json")
+    loaded = AppConfig.from_dict(json.loads((tmpdir / "config.json").read_text(encoding="utf-8")))
+    assert_true(all(model.model_id != deleted_model_id for model in loaded.models), "deleted model should not persist")
+    assert_true(loaded.default_model_id != deleted_model_id, "default model should not reference deleted model")
+    assert_true(loaded.codex_model_id != deleted_model_id, "codex model should not reference deleted model")
+    assert_true(all(value != deleted_model_id for value in loaded.model_env.values()), "model env should not reference deleted model")
+
+
 def exercise_count_tokens_estimate() -> None:
     body = {
         "system": "You are Claude Code.",
@@ -755,6 +788,7 @@ def main() -> int:
         exercise_chat_completion_json_to_responses()
         exercise_mixed_tool_result_ordering()
         exercise_model_suffix_routing()
+        exercise_deleted_model_route_cleanup(tmpdir)
         exercise_count_tokens_estimate()
         exercise_codex_responses_passthrough()
         exercise_codex_config_writer(tmpdir)

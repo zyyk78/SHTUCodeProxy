@@ -995,6 +995,8 @@ class IosProxyApp(QMainWindow):
         self.config_data.models.append(ModelConfig("New Model", "new-model-id", DEFAULT_CHAT_COMPLETIONS_URL, "", "GPT-5.5", DEFAULT_API_FORMAT))
         self.refresh_model_list()
         self.model_table.selectRow(len(self.config_data.models) - 1)
+        save_config(self.config_data)
+        self.append_log("Created new model draft")
 
     def delete_model(self) -> None:
         if self.selected_index is None or not self.config_data.models:
@@ -1002,9 +1004,22 @@ class IosProxyApp(QMainWindow):
         if len(self.config_data.models) == 1:
             self.warning("Cannot delete", "Keep at least one model.")
             return
+        deleted_model_id = self.config_data.models[self.selected_index].model_id
         del self.config_data.models[self.selected_index]
         self.selected_index = None
+        remaining_ids = self.model_ids()
+        fallback = remaining_ids[0]
+        self.config_data.model_env = {
+            key: self.config_data.model_env.get(key, fallback) if self.config_data.model_env.get(key) in remaining_ids else fallback
+            for key in MODEL_ENV_KEYS
+        }
+        if self.config_data.default_model_id not in remaining_ids:
+            self.config_data.default_model_id = fallback
+        if self.config_data.codex_model_id not in remaining_ids:
+            self.config_data.codex_model_id = fallback
         self.refresh_model_list()
+        save_config(self.config_data)
+        self.append_log(f"Deleted model {deleted_model_id}")
 
     def apply_model(self) -> bool:
         if self.selected_index is None:
@@ -1030,6 +1045,7 @@ class IosProxyApp(QMainWindow):
         current = self.selected_index
         self.refresh_model_list()
         self.model_table.selectRow(current)
+        save_config(self.config_data)
         self.append_log(f"Applied model {model.model_id}")
         return True
 
