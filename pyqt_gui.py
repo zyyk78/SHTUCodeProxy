@@ -904,7 +904,7 @@ class IosProxyApp(QMainWindow):
             button.setObjectName("RunButton")
         elif kind == "optional":
             button.setObjectName("OptionalButton")
-        button.clicked.connect(slot)
+        button.clicked.connect(lambda _checked=False, target=slot: target())
         return button
 
     def step_card(self, title: str, button_text: str, description: str, slot, primary: bool = False, kind: str = "default") -> QFrame:
@@ -951,6 +951,15 @@ class IosProxyApp(QMainWindow):
     def model_ids(self) -> list[str]:
         return [model.model_id for model in self.config_data.models]
 
+    def unique_model_id(self, base_id: str = "new-model-id") -> str:
+        existing = set(self.model_ids())
+        if base_id not in existing:
+            return base_id
+        counter = 2
+        while f"{base_id}-{counter}" in existing:
+            counter += 1
+        return f"{base_id}-{counter}"
+
     def refresh_model_list(self) -> None:
         self.model_table.blockSignals(True)
         self.model_table.setRowCount(0)
@@ -971,12 +980,12 @@ class IosProxyApp(QMainWindow):
             debug_log(f"model table selection changed row={rows[0].row()}")
             self.load_model(rows[0].row())
 
-    def refresh_model_env_choices(self) -> None:
+    def refresh_model_env_choices(self, route_overrides: dict[str, str] | None = None, codex_model_override: str | None = None) -> None:
         ids = self.model_ids()
         if not ids:
             return
         for key, combo in self.model_env_combos.items():
-            current = self.config_data.model_env.get(key) or self.config_data.default_model_id
+            current = (route_overrides or {}).get(key) or self.config_data.model_env.get(key) or self.config_data.default_model_id
             combo.blockSignals(True)
             combo.clear()
             combo.addItems(ids)
@@ -985,7 +994,8 @@ class IosProxyApp(QMainWindow):
         self.codex_model_combo.blockSignals(True)
         self.codex_model_combo.clear()
         self.codex_model_combo.addItems(ids)
-        self.codex_model_combo.setCurrentText(self.config_data.codex_model_id if self.config_data.codex_model_id in ids else ids[0])
+        codex_current = codex_model_override or self.config_data.codex_model_id
+        self.codex_model_combo.setCurrentText(codex_current if codex_current in ids else ids[0])
         self.codex_model_combo.blockSignals(False)
         self.default_model_edit.setText(self.model_env_combos["ANTHROPIC_MODEL"].currentText())
         self.update_model_route_summary()
@@ -1041,7 +1051,8 @@ class IosProxyApp(QMainWindow):
             self.base_url_edit.setText(DEFAULT_CHAT_COMPLETIONS_URL)
 
     def new_model(self) -> None:
-        self.config_data.models.append(ModelConfig("New Model", "new-model-id", DEFAULT_CHAT_COMPLETIONS_URL, "", "GPT-5.5", DEFAULT_API_FORMAT))
+        model_id = self.unique_model_id()
+        self.config_data.models.append(ModelConfig("New Model", model_id, DEFAULT_RESPONSES_URL, "", model_id, DEFAULT_API_FORMAT))
         self.refresh_model_list()
         self.model_table.selectRow(len(self.config_data.models) - 1)
         save_config(self.config_data)
@@ -1070,7 +1081,7 @@ class IosProxyApp(QMainWindow):
         save_config(self.config_data)
         self.append_log(f"Deleted model {deleted_model_id}")
 
-    def apply_model(self) -> bool:
+    def apply_model(self, route_overrides: dict[str, str] | None = None, codex_model_override: str | None = None, persist: bool = True) -> bool:
         if self.selected_index is None:
             return True
         old_model_id = self.config_data.models[self.selected_index].model_id
@@ -1086,15 +1097,38 @@ class IosProxyApp(QMainWindow):
         if not model.model_id or not model.base_url:
             self.error("Missing value", "Model ID and Base URL are required.")
             return False
+        for index, existing_model in enumerate(self.config_data.models):
+            if index != self.selected_index and existing_model.model_id == model.model_id:
+                self.error("Duplicate model ID", f"Model ID already exists: {model.model_id}")
+                return False
+        if route_overrides is None:
+            route_overrides = self.selected_model_env()
+        if codex_model_override is None:
+            codex_model_override = self.selected_codex_model_id()
         if old_model_id != model.model_id:
             for combo in self.model_env_combos.values():
                 if combo.currentText() == old_model_id:
                     combo.setCurrentText(model.model_id)
+            route_overrides = {
+                key: model.model_id if value == old_model_id else value
+                for key, value in route_overrides.items()
+            }
+            if codex_model_override == old_model_id:
+                codex_model_override = model.model_id
         self.config_data.models[self.selected_index] = model
+        remaining_ids = self.model_ids()
+        fallback = model.model_id if model.model_id in remaining_ids else remaining_ids[0]
+        self.config_data.model_env = {
+            key: value if value in remaining_ids else fallback
+            for key, value in route_overrides.items()
+        }
+        self.config_data.default_model_id = self.config_data.model_env["ANTHROPIC_MODEL"]
+        self.config_data.codex_model_id = codex_model_override if codex_model_override in remaining_ids else fallback
         current = self.selected_index
         self.refresh_model_list()
         self.model_table.selectRow(current)
-        save_config(self.config_data)
+        if persist:
+            save_config(self.config_data)
         self.append_log(f"Applied model {model.model_id}")
         return True
 
@@ -1146,16 +1180,20 @@ class IosProxyApp(QMainWindow):
         self.config_data.diagnostic_logging = self.diagnostic_logging_check.isChecked()
         return True
 
-    def save(self) -> None:
-        if not self.apply_model() or not self.sync_server_fields():
-            return
+    def save(self) -> bool:
+        pending_model_env = self.selected_model_env()
+        pending_codex_model_id = self.selected_codex_model_id()
+        if not self.apply_model(pending_model_env, pending_codex_model_id, persist=False) or not self.sync_server_fields():
+            return False
         save_config(self.config_data)
         self.append_log(f"Saved config: {config_path()}")
+        return True
 
-    def start_proxy(self) -> None:
+    def start_proxy(self) -> bool:
         if self.server:
             self.stop_proxy()
-        self.save()
+        if not self.save():
+            return False
         proxy.ACTIVE_CONFIG = self.config_data
         try:
             self.server = ThreadingHTTPServer((self.config_data.host, self.config_data.port), proxy.ProxyHandler)
@@ -1167,16 +1205,17 @@ class IosProxyApp(QMainWindow):
                 except OSError as retry_exc:
                     self.server = None
                     self.error("Start failed", str(retry_exc))
-                    return
+                    return False
             else:
                 self.server = None
                 self.error("Start failed", str(exc))
-                return
+                return False
         self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.server_thread.start()
         self.status_label.setText(f"Status: Running on http://{self.config_data.host}:{self.config_data.port}")
         self.append_log(f"Proxy started on http://{self.config_data.host}:{self.config_data.port}")
         self.refresh_connection_status()
+        return True
 
     def stop_proxy(self) -> None:
         if self.server:
@@ -1217,7 +1256,8 @@ class IosProxyApp(QMainWindow):
         return [self.claude_settings_path_edit.text().strip()]
 
     def restore_client_config(self, original: bool) -> None:
-        self.save()
+        if not self.save():
+            return
         mode = self.client_mode()
         label = "original" if original else "most recent"
         if not self.ask("Restore client config", f"Restore the {label} backup for {mode} client config?\n\nThe current file will be backed up before restore."):
@@ -1242,7 +1282,8 @@ class IosProxyApp(QMainWindow):
         self.info("Restore complete" if restored else "Restore unavailable", message or "No matching backup was found.")
 
     def check_codex_health(self) -> None:
-        self.save()
+        if not self.save():
+            return
         ok, messages = cli.codex_health_report(self.config_data)
         title = "Codex health OK" if ok else "Codex health needs attention"
         prefix = "All required Codex proxy settings look valid." if ok else "Some Codex settings need repair. Click Write Client Config to fix managed fields."
@@ -1279,20 +1320,22 @@ class IosProxyApp(QMainWindow):
             self.append_log("Claude mode selected: writes Claude settings and can launch Claude Code.")
 
     def write_claude_settings(self, notify: bool = True) -> bool:
-        self.save()
+        if not self.save():
+            return False
         if self.needs_first_run_setup():
             self.warning("API key required", "Please paste your GenAI API Key before writing Claude settings.")
             return False
         settings_path = cli.write_claude_settings(self.config_data)
         self.append_log(f"Wrote Claude settings env: {settings_path}")
-        if not self.server:
-            self.start_proxy()
+        if not self.server and not self.start_proxy():
+            return False
         if notify:
             self.info("Claude settings written", f"Updated env in:\n{settings_path}\n\nProxy is running at http://{self.config_data.host}:{self.config_data.port}. Restart Claude Code to use it.")
         return True
 
     def write_codex_config(self, notify: bool = True) -> bool:
-        self.save()
+        if not self.save():
+            return False
         if self.needs_first_run_setup():
             self.warning("API key required", "Please paste your GenAI API Key before writing Codex config.")
             return False
@@ -1300,8 +1343,8 @@ class IosProxyApp(QMainWindow):
         save_config(self.config_data)
         self.append_log(f"Wrote Codex config: {config_path_written}")
         self.append_log(f"Wrote Codex auth: {auth_path_written}")
-        if not self.server:
-            self.start_proxy()
+        if not self.server and not self.start_proxy():
+            return False
         if notify:
             self.info("Codex config written", f"Updated Codex provider/profile and auth key in:\n{config_path_written}\n{auth_path_written}\n\nProxy is running at http://{self.config_data.host}:{self.config_data.port}.\nUse Codex profile: shtu_proxy.")
         return True
@@ -1317,9 +1360,10 @@ class IosProxyApp(QMainWindow):
 
     def run_selected_client(self) -> None:
         if self.client_mode() == "codex":
-            self.save()
-            if not self.server:
-                self.start_proxy()
+            if not self.save():
+                return
+            if not self.server and not self.start_proxy():
+                return
             self.info("Codex ready", "Proxy is running. Start Codex with profile shtu_proxy from Codex CLI/Desktop.")
             return
         self.launch_claude_code()
@@ -1339,7 +1383,8 @@ class IosProxyApp(QMainWindow):
             self.error("Launch failed", str(exc))
 
     def install_launch_script(self) -> None:
-        self.save()
+        if not self.save():
+            return
         target = cli.install_launch_script(self.config_data)
         if not is_windows():
             target.chmod(0o755)

@@ -1,5 +1,14 @@
 ﻿# Changelog
 
+## v4.2.4 - 2026-05-14
+
+Model routing persistence fix.
+
+### Fixed
+
+- Preserved Model Routing and Codex Model selections when clicking Save Config after editing the selected model.
+- Kept route selections synchronized when a model ID is renamed, instead of letting the model list refresh revert to stale saved values.
+
 ## v4.1.1 - 2026-05-13
 
 GUI interaction polish release.

@@ -306,6 +306,78 @@ def exercise_deleted_model_route_cleanup(tmpdir: Path) -> None:
     assert_true(all(value != deleted_model_id for value in loaded.model_env.values()), "model env should not reference deleted model")
 
 
+def exercise_pyqt_model_management_regressions() -> None:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt5.QtWidgets import QApplication, QPushButton
+    import pyqt_gui
+
+    app = QApplication.instance() or QApplication([])
+    models = [
+        ModelConfig("GLM", "glm-chat", "https://example.invalid/v1/responses", "key", "glm-chat", "responses"),
+        ModelConfig("Qwen", "qwen-chat", "https://example.invalid/v1/chat/completions", "key", "qwen-chat", "chat_completions"),
+        ModelConfig("DeepSeek", "deepseek-chat", "https://example.invalid/v1/chat/completions", "key", "deepseek-chat", "chat_completions"),
+    ]
+    config = AppConfig(
+        host="127.0.0.1",
+        port=18082,
+        default_model_id="glm-chat",
+        codex_model_id="glm-chat",
+        codex_sandbox_mode="workspace-write",
+        model_env={key: "glm-chat" for key in MODEL_ENV_KEYS},
+        timeout=30,
+        claude_path="claude",
+        claude_settings_path="settings.json",
+        codex_config_path="config.toml",
+        codex_auth_path="auth.json",
+        diagnostic_logging=False,
+        models=models,
+    )
+    with (
+        patch("pyqt_gui.load_config", return_value=config),
+        patch("pyqt_gui.save_config"),
+        patch.object(pyqt_gui.IosProxyApp, "error", lambda self, title, message: None),
+        patch.object(pyqt_gui.IosProxyApp, "warning", lambda self, title, message: None),
+        patch.object(pyqt_gui.IosProxyApp, "info", lambda self, title, message: None),
+    ):
+        window = pyqt_gui.IosProxyApp()
+        window.model_env_combos["ANTHROPIC_MODEL"].setCurrentText("qwen-chat")
+        window.model_env_combos["ANTHROPIC_DEFAULT_HAIKU_MODEL"].setCurrentText("deepseek-chat")
+        window.codex_model_combo.setCurrentText("deepseek-chat")
+        assert_true(window.save(), "save should succeed after route changes")
+        assert_true(window.config_data.model_env["ANTHROPIC_MODEL"] == "qwen-chat", "main route should persist")
+        assert_true(window.config_data.model_env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "deepseek-chat", "haiku route should persist")
+        assert_true(window.config_data.codex_model_id == "deepseek-chat", "codex route should persist")
+        save_button = next(button for button in window.findChildren(QPushButton) if button.text() == "Save Config")
+        save_button.click()
+        assert_true(window.config_data.default_model_id == "qwen-chat", "button click save should not receive checked state as route override")
+        assert_true(window.save(), "repeat save should be idempotent")
+        assert_true(window.config_data.default_model_id == "qwen-chat", "repeat save should not revert default model")
+
+        previous_ids = set(window.model_ids())
+        window.new_model()
+        created_ids = set(window.model_ids()) - previous_ids
+        assert_true(len(created_ids) == 1, "new model should create exactly one unique ID")
+        new_model = next(model for model in window.config_data.models if model.model_id in created_ids)
+        assert_true(new_model.api_format == "responses", "new model should default to responses API format")
+
+        window.model_table.selectRow(1)
+        window.model_id_edit.setText("deepseek-chat")
+        assert_true(not window.apply_model(), "duplicate model ID should be rejected")
+        assert_true(len({model.model_id for model in window.config_data.models}) == len(window.config_data.models), "model IDs should remain unique")
+
+        window.model_id_edit.setText("qwen-plus")
+        window.model_env_combos["ANTHROPIC_MODEL"].setCurrentText("qwen-chat")
+        assert_true(window.apply_model(), "model rename should succeed")
+        assert_true(window.config_data.model_env["ANTHROPIC_MODEL"] == "qwen-plus", "renamed routed model should update routes")
+
+        window.delete_model()
+        assert_true("qwen-plus" not in {model.model_id for model in window.config_data.models}, "deleted model should be removed")
+        remaining_ids = {model.model_id for model in window.config_data.models}
+        assert_true(all(value in remaining_ids for value in window.config_data.model_env.values()), "routes should not reference deleted models")
+        assert_true(window.config_data.codex_model_id in remaining_ids, "codex model should not reference deleted models")
+        window.close()
+
+
 def exercise_count_tokens_estimate() -> None:
     body = {
         "system": "You are Claude Code.",
@@ -801,6 +873,7 @@ def main() -> int:
         exercise_mixed_tool_result_ordering()
         exercise_model_suffix_routing()
         exercise_deleted_model_route_cleanup(tmpdir)
+        exercise_pyqt_model_management_regressions()
         exercise_count_tokens_estimate()
         exercise_codex_responses_passthrough()
         exercise_codex_config_writer(tmpdir)
