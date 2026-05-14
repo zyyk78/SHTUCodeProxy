@@ -644,7 +644,7 @@ class IosProxyApp(QMainWindow):
         nav_layout = QHBoxLayout(nav)
         nav_layout.setContentsMargins(24, 12, 24, 12)
         title_box = QVBoxLayout()
-        title = QLabel("SHTUCodeProxy 4.2.0")
+        title = QLabel(f"SHTUCodeProxy {APP_VERSION}")
         title.setObjectName("WindowTitle")
         subtitle = QLabel("Claude Code and Codex local bridge")
         subtitle.setObjectName("WindowSubtitle")
