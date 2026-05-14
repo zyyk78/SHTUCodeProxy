@@ -1,9 +1,10 @@
 # SHTUCodeProxy
 让 Claude Code、Codex 、各种支持自定义API的工具与校园 GenAI API 真正连起来
 面向真实 AI 编程工作流的本地协议适配层,把模型路由、客户端配置、工具调用、多轮上下文、配置恢复和跨平台打包整合在一起，让校园 GenAI API 更容易进入日常研发和学习场景。
+目前尚未测试其对第三方 API 的有效性。
 Enable Claude Code, Codex, and various tools that support custom APIs to truly connect with the Campus GenAI API.
 A local protocol adaptation layer for real-world AI programming workflows, integrating model routing, client configuration, tool calling, multi-turn context, configuration recovery, and cross-platform packaging — making the Campus GenAI API more accessible in everyday development and learning scenarios.
-
+No testing has been done on whether it is effective with third-party APIs.
 > **Important:** GPT-series models should use the `responses` API Format. Chat-only models such as GLM, Qwen, or DeepSeek can use `chat_completions` when their upstream endpoint requires it.
 
 Current release: **v4.2.5**
