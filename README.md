@@ -1,13 +1,16 @@
 # SHTUCodeProxy
+
 让 Claude Code、Codex 、各种支持自定义API的工具与校园 GenAI API 真正连起来
 面向真实 AI 编程工作流的本地协议适配层,把模型路由、客户端配置、工具调用、多轮上下文、配置恢复和跨平台打包整合在一起，让校园 GenAI API 更容易进入日常研发和学习场景。
 目前尚未测试其对第三方 API 的有效性。
+
 Enable Claude Code, Codex, and various tools that support custom APIs to truly connect with the Campus GenAI API.
 A local protocol adaptation layer for real-world AI programming workflows, integrating model routing, client configuration, tool calling, multi-turn context, configuration recovery, and cross-platform packaging — making the Campus GenAI API more accessible in everyday development and learning scenarios.
 No testing has been done on whether it is effective with third-party APIs.
+
 > **Important:** GPT-series models should use the `responses` API Format. Chat-only models such as GLM, Qwen, or DeepSeek can use `chat_completions` when their upstream endpoint requires it.
 
-Current release: **v4.2.5**
+Current release: **v4.2.6**
 
 SHTUCodeProxy is a cross-platform local proxy and desktop configuration tool for connecting **Claude Code**, **Codex CLI**, **Codex Desktop**, and ordinary API clients to the ShanghaiTech University campus **GenAI API** or compatible model endpoints.
 
@@ -88,7 +91,7 @@ For normal conversational and many coding-assistance workflows, the proxy can be
 Use the recommended single-file release:
 
 ```text
-SHTUCodeProxy-v4.2.5-windows-x64.exe
+SHTUCodeProxy-v4.2.6-windows-x64.exe
 ```
 
 You do **not** need to install Python, pip, PyInstaller, or any Python packages. The single-file EXE bundles the Python runtime and required dependencies.
@@ -134,7 +137,7 @@ For Codex CLI/Desktop, install and sign in to Codex separately. SHTUCodeProxy on
 Recommended download for normal users:
 
 ```text
-SHTUCodeProxy-v4.2.5-windows-x64.exe
+SHTUCodeProxy-v4.2.6-windows-x64.exe
 ```
 
 Double-click it directly. No Python installation is required.
@@ -142,7 +145,7 @@ Double-click it directly. No Python installation is required.
 Alternative portable zip package:
 
 ```text
-SHTUCodeProxy-v4.2.5-windows-x64.zip
+SHTUCodeProxy-v4.2.6-windows-x64.zip
 ```
 
 If you use the zip package, extract the whole folder and run `SHTUCodeProxy.exe` inside it.
@@ -150,22 +153,22 @@ If you use the zip package, extract the whole folder and run `SHTUCodeProxy.exe`
 Linux desktop users can download either package:
 
 ```text
-SHTUCodeProxy-v4.2.5-linux-x86_64
-SHTUCodeProxy-v4.2.5-linux-x86_64-python-launcher.tar.xz
+SHTUCodeProxy-v4.2.6-linux-x86_64
+SHTUCodeProxy-v4.2.6-linux-x86_64-python-launcher.tar.xz
 ```
 
 For the single-file binary, make it executable and run it from a desktop session:
 
 ```bash
-chmod +x SHTUCodeProxy-v4.2.5-linux-x86_64
-./SHTUCodeProxy-v4.2.5-linux-x86_64
+chmod +x SHTUCodeProxy-v4.2.6-linux-x86_64
+./SHTUCodeProxy-v4.2.6-linux-x86_64
 ```
 
 For the python-launcher package, extract it and run:
 
 ```bash
-tar -xf SHTUCodeProxy-v4.2.5-linux-x86_64-python-launcher.tar.xz
-cd SHTUCodeProxy-v4.2.5-linux-x86_64-python-launcher
+tar -xf SHTUCodeProxy-v4.2.6-linux-x86_64-python-launcher.tar.xz
+cd SHTUCodeProxy-v4.2.6-linux-x86_64-python-launcher
 python3 run_shtucodeproxy.py
 ```
 
@@ -450,14 +453,14 @@ Or install PyInstaller automatically:
 Outputs:
 
 ```text
-release\SHTUCodeProxy-v4.2.5-windows-x64.exe
-release\SHTUCodeProxy-v4.2.5-windows-x64.zip
+release\SHTUCodeProxy-v4.2.6-windows-x64.exe
+release\SHTUCodeProxy-v4.2.6-windows-x64.zip
 dist\SHTUCodeProxy\SHTUCodeProxy.exe
 ```
 
-Use `release\SHTUCodeProxy-v4.2.5-windows-x64.exe` for normal Windows users. It is a single-file executable and does not require Python or the `_internal` folder.
+Use `release\SHTUCodeProxy-v4.2.6-windows-x64.exe` for normal Windows users. It is a single-file executable and does not require Python or the `_internal` folder.
 
-Use `release\SHTUCodeProxy-v4.2.5-windows-x64.zip` as the Windows portable folder package. If you distribute the zip package, users must extract the whole folder because the `_internal` runtime folder is required by the folder build.
+Use `release\SHTUCodeProxy-v4.2.6-windows-x64.zip` as the Windows portable folder package. If you distribute the zip package, users must extract the whole folder because the `_internal` runtime folder is required by the folder build.
 
 For Linux/macOS packaging from source, run:
 
@@ -474,15 +477,15 @@ Windows users should normally download the single-file EXE from the Release page
 ### Linux Release Binary
 
 ```bash
-chmod +x SHTUCodeProxy-v4.2.5-linux-x86_64
-./SHTUCodeProxy-v4.2.5-linux-x86_64
+chmod +x SHTUCodeProxy-v4.2.6-linux-x86_64
+./SHTUCodeProxy-v4.2.6-linux-x86_64
 ```
 
 ### Linux Python Launcher Package
 
 ```bash
-tar -xf SHTUCodeProxy-v4.2.5-linux-x86_64-python-launcher.tar.xz
-cd SHTUCodeProxy-v4.2.5-linux-x86_64-python-launcher
+tar -xf SHTUCodeProxy-v4.2.6-linux-x86_64-python-launcher.tar.xz
+cd SHTUCodeProxy-v4.2.6-linux-x86_64-python-launcher
 python3 run_shtucodeproxy.py
 ```
 
@@ -495,8 +498,8 @@ Linux notes:
 ### Source Package
 
 ```bash
-unzip SHTUCodeProxy-v4.2.5-source-linux-macos.zip
-cd SHTUCodeProxy-v4.2.5-source
+unzip SHTUCodeProxy-v4.2.6-source-linux-macos.zip
+cd SHTUCodeProxy-v4.2.6-source
 python3 -m pip install -r requirements-build.txt
 python3 smoke_test.py
 python3 app.py
@@ -641,6 +644,7 @@ Created by **sunyb**, ShanghaiTech University Library and Information Center.
 ## License
 
 MIT License. See `LICENSE`.
+
 
 
 

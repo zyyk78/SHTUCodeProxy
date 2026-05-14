@@ -1,5 +1,14 @@
 ﻿# Changelog
 
+## v4.2.6 - 2026-05-14
+
+Source package entry-point fix.
+
+### Fixed
+
+- Replaced the stale Tkinter `gui.py` preview entry point with a PyQt5 compatibility launcher so source package users no longer see the old `4.0.4 Preview` interface.
+- Avoided the slower legacy GUI path when users run `python gui.py` from the source package.
+
 ## v4.2.5 - 2026-05-14
 
 Linux package runtime dependency fix.

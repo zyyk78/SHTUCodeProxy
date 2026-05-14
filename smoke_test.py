@@ -858,6 +858,13 @@ def main() -> int:
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
         assert_true(settings["env"]["ANTHROPIC_MODEL"] == "smoke-model", "settings model mismatch")
         assert_true(settings["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:18082", "settings base URL mismatch")
+        config.port = 19082
+        changed_port_env = cli.claude_env(config)
+        assert_true(changed_port_env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:19082", "changed port env mismatch")
+        changed_settings_path = cli.write_claude_settings(config)
+        changed_settings = json.loads(changed_settings_path.read_text(encoding="utf-8"))
+        assert_true(changed_settings["env"]["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:19082", "changed port settings mismatch")
+        config.port = 18082
 
         script = launch_script_text(env, "claude")
         assert_true("ANTHROPIC_BASE_URL" in script, "launch script missing base URL")
