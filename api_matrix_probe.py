@@ -1,28 +1,18 @@
 from __future__ import annotations
 
 import json
-import pathlib
-import re
 import sys
 import urllib.error
 import urllib.request
 from typing import Any, Dict, Tuple
 
+from test_support.api_notes import DEFAULT_API_NOTES, require_tokens
 
-API_NOTES = pathlib.Path(r"D:\litellm\api.txt")
 LOCAL_RESPONSES_URL = "http://127.0.0.1:8082/v1/responses"
 
 
 def load_tokens() -> Dict[str, str]:
-    text = API_NOTES.read_text(encoding="utf-8-sig")
-    tokens: Dict[str, str] = {}
-    for label, model in (("GLM 5.1", "glm-chat"), ("deepv4", "deepseek-chat"), ("qwen3.5", "qwen-instruct")):
-        marker = re.search(rf"{re.escape(label)}:(.*?)(?:\n\s*\n\s*\n|\Z)", text, re.S)
-        section = marker.group(1) if marker else text
-        match = re.search(r"Authorization:\s*Bearer\s+([A-Za-z0-9._-]+)", section)
-        if match:
-            tokens[model] = match.group(1)
-    return tokens
+    return require_tokens(DEFAULT_API_NOTES)
 
 
 def post_json(url: str, token: str, payload: Dict[str, Any], timeout: int = 120) -> Tuple[int, str]:

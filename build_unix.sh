@@ -97,4 +97,7 @@ if [[ "$ONE_DIR_ONLY" != "1" ]]; then
   echo "Single-file build complete: release/$APP_NAME"
 fi
 
+find release -type f \( -name '*_probe.py' -o -name 'local_key_probe.py' \) -delete 2>/dev/null || true
+find release -type d -name 'test_support' -prune -exec rm -rf {} + 2>/dev/null || true
+
 echo "Build complete. Release files are in: $ROOT/release"

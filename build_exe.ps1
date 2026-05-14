@@ -87,6 +87,7 @@ if (-not $OneDirOnly -and -not $OneFileOnly) {
   $TrackedFiles = git -C $Root ls-files
   foreach ($RelativePath in $TrackedFiles) {
     if ($RelativePath -match '^(release|build|dist)/') { continue }
+    if ($RelativePath -match '^(test_support/|.*_probe\.py$|local_key_probe\.py$)') { continue }
     if ($RelativePath -match '(^|/)(config\.json|\.env|auth\.json)$') { continue }
     if ($RelativePath -match '\.(bak|key|pem)$') { continue }
 
