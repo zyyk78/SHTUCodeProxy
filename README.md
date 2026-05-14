@@ -20,6 +20,10 @@ This tool was created by **sunyb, ShanghaiTech University Library and Informatio
 
 <img width="2456" height="1620" alt="5cf20b87c9f360383d6b1c8d2fa02b48" src="https://github.com/user-attachments/assets/602ffb99-90ca-44b0-b302-911641c7dc7e" />
 
+<img width="946" height="764" alt="image" src="https://github.com/user-attachments/assets/421e1bba-9d29-4530-8178-2c299fa9d575" />
+
+<img width="1200" height="800" alt="image" src="https://github.com/user-attachments/assets/61440724-7080-4c1e-b43c-d4021eda6abe" />
+
 
 ## What It Does
 
