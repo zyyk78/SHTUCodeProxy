@@ -10,7 +10,7 @@ import tomllib
 from pathlib import Path
 from typing import Dict
 
-from config_store import AppConfig, CODEX_SANDBOX_MODES, DEFAULT_CODEX_SANDBOX_MODE, MODEL_ENV_KEYS, config_path, ensure_builtin_model_routes, load_config, save_config
+from config_store import AppConfig, CODEX_SANDBOX_MODES, DEFAULT_CODEX_SANDBOX_MODE, MODEL_ENV_KEYS, config_path, load_config, save_config
 from platform_utils import launch_script_filename, launch_script_text
 from proxy import ProxyHandler, ThreadingHTTPServer
 from safe_io import atomic_write_text, backup_existing_file, restore_latest_backup, snapshot_original_file
@@ -270,7 +270,6 @@ def write_codex_auth(config: AppConfig) -> Path:
 
 
 def write_codex_files(config: AppConfig) -> tuple[Path, Path]:
-    ensure_builtin_model_routes(config)
     if not getattr(config, "codex_model_id", ""):
         config.codex_model_id = config.default_model_id
     return write_codex_config(config), write_codex_auth(config)
@@ -286,7 +285,6 @@ def restore_client_backup(path_value: str, *, original: bool = False) -> Path:
 
 
 def codex_health_report(config: AppConfig) -> tuple[bool, list[str]]:
-    ensure_builtin_model_routes(config)
     messages: list[str] = []
     ok = True
     config_target = Path(getattr(config, "codex_config_path", "") or Path.home() / ".codex" / "config.toml").expanduser()

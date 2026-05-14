@@ -31,10 +31,12 @@ from PyQt5.QtWidgets import (
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QMenu,
     QPushButton,
     QRadioButton,
     QScrollArea,
     QSizePolicy,
+    QSystemTrayIcon,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -42,7 +44,15 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-APP_VERSION = "4.2.1"
+def app_version() -> str:
+    version_file = Path(__file__).resolve().with_name("VERSION")
+    try:
+        return version_file.read_text(encoding="utf-8").strip() or "dev"
+    except Exception:
+        return "dev"
+
+
+APP_VERSION = app_version()
 DIAGNOSTICS_ENABLED = (
     os.getenv("SHTUCODEPROXY_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
     or "diagnostic" in Path(sys.argv[0]).stem.lower()
@@ -551,9 +561,14 @@ class IosProxyApp(QMainWindow):
         self.selected_index: int | None = None
         self.danger_sandbox_confirmed = False
         self.model_env_combos: dict[str, QComboBox] = {}
+        self.tray_icon: QSystemTrayIcon | None = None
+        self.tray_available = False
+        self.force_quit = False
+        self.tray_notice_shown = False
         debug_log("main window initializing")
 
         self.build_ui()
+        self.setup_tray()
         self.refresh_model_list()
         self.refresh_connection_status()
         self.status_timer = QTimer(self)
@@ -561,6 +576,40 @@ class IosProxyApp(QMainWindow):
         self.status_timer.start(5000)
         QTimer.singleShot(300, self.show_first_run_tip)
         debug_log("main window initialized")
+
+    def setup_tray(self) -> None:
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self.append_log("System tray is not available; closing the window will exit the app.") if hasattr(self, "log_text") else None
+            return
+        tray = QSystemTrayIcon(build_app_icon(), self)
+        tray.setToolTip(f"SHTUCodeProxy {APP_VERSION}")
+        menu = QMenu(self)
+        menu.addAction("Show SHTUCodeProxy", self.show_from_tray)
+        menu.addAction("Start Proxy", self.start_proxy)
+        menu.addAction("Stop Proxy", self.stop_proxy)
+        menu.addSeparator()
+        menu.addAction("Quit", self.quit_from_tray)
+        tray.setContextMenu(menu)
+        tray.activated.connect(self.on_tray_activated)
+        tray.show()
+        self.tray_icon = tray
+        self.tray_available = True
+
+    def on_tray_activated(self, reason) -> None:
+        if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
+            self.show_from_tray()
+
+    def show_from_tray(self) -> None:
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def quit_from_tray(self) -> None:
+        self.force_quit = True
+        self.stop_proxy()
+        if self.tray_icon:
+            self.tray_icon.hide()
+        QApplication.quit()
 
     def add_shadow(self, widget: QWidget, blur: int = 20, y: int = 2) -> None:
         if DISABLE_QT_GRAPHICS_EFFECTS:
@@ -1318,7 +1367,22 @@ class IosProxyApp(QMainWindow):
             self.codex_auth_path_edit.setText(selected)
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if self.tray_available and not self.force_quit:
+            event.ignore()
+            self.hide()
+            if self.tray_icon and not self.tray_notice_shown:
+                self.tray_icon.showMessage(
+                    "SHTUCodeProxy is still running",
+                    "The app was minimized to the system tray. Use the tray menu to show or quit it.",
+                    QSystemTrayIcon.Information,
+                    3500,
+                )
+                self.tray_notice_shown = True
+            self.append_log("Minimized to system tray; proxy keeps running in the background.")
+            return
         self.stop_proxy()
+        if self.tray_icon:
+            self.tray_icon.hide()
         event.accept()
 
 
@@ -1326,6 +1390,7 @@ def run() -> int:
     install_diagnostics()
     set_windows_app_id()
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("SHTUCodeProxy")
     app.setApplicationDisplayName("SHTUCodeProxy")
     app.setOrganizationName("SHTU")

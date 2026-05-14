@@ -42,6 +42,7 @@ if [[ "$ONE_FILE_ONLY" != "1" ]]; then
     --add-data "pyqt_gui.py:." \
     --add-data "config_store.py:." \
     --add-data "safe_io.py:." \
+    --add-data "VERSION:." \
     app.py
 
   rm -rf "build/$PACKAGE_ROOT"
@@ -91,6 +92,7 @@ if [[ "$ONE_DIR_ONLY" != "1" ]]; then
     --add-data "pyqt_gui.py:." \
     --add-data "config_store.py:." \
     --add-data "safe_io.py:." \
+    --add-data "VERSION:." \
     app.py
 
   cp "dist/$APP_NAME" "release/$APP_NAME"

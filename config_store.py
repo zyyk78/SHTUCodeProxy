@@ -184,7 +184,7 @@ def config_path() -> Path:
     return app_dir() / "config.json"
 
 
-def ensure_builtin_model_routes(config: AppConfig) -> AppConfig:
+def seed_builtin_model_routes(config: AppConfig) -> AppConfig:
     existing = {model.model_id: model for model in config.models}
     routes = [
         ("GLM Chat", "glm-chat", DEFAULT_CHAT_COMPLETIONS_URL, "chat_completions"),
@@ -212,17 +212,16 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
     target = path or config_path()
     if not target.exists():
         config = AppConfig.default()
-        ensure_builtin_model_routes(config)
+        seed_builtin_model_routes(config)
         save_config(config, target)
         return config
     try:
-        return ensure_builtin_model_routes(AppConfig.from_dict(json.loads(target.read_text(encoding="utf-8-sig"))))
+        return AppConfig.from_dict(json.loads(target.read_text(encoding="utf-8-sig")))
     except Exception:
-        return ensure_builtin_model_routes(AppConfig.default())
+        return seed_builtin_model_routes(AppConfig.default())
 
 
 def save_config(config: AppConfig, path: Optional[Path] = None) -> None:
-    ensure_builtin_model_routes(config)
     target = path or config_path()
     payload = json.dumps(config.to_dict(), ensure_ascii=False, indent=2)
     atomic_write_text(target, payload, validate=lambda text: json.loads(text))

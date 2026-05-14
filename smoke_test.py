@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import cli
 from safe_io import restore_latest_backup, snapshot_original_file
-from config_store import AppConfig, MODEL_ENV_KEYS, ModelConfig, save_config
+from config_store import AppConfig, MODEL_ENV_KEYS, ModelConfig, load_config, save_config, seed_builtin_model_routes
 from platform_utils import launch_script_text, portable_claude_path, portable_settings_path
 from proxy import (
     anthropic_messages_to_chat_completions,
@@ -558,11 +558,23 @@ def exercise_codex_config_writer(tmpdir: Path) -> None:
             os.environ["CLAUDE_RESPONSES_PROXY_CONFIG"] = old_env_config
     default_text = Path(default_config.codex_config_path).read_text(encoding="utf-8")
     assert_true('model = "smoke-model"' in default_text, "Codex setup should preserve selected Codex model")
-    assert_true(any(model.model_id == "glm-chat" and model.api_format == "chat_completions" for model in default_config.models), "glm-chat config should be available as an optional proxy route")
+    seed_builtin_model_routes(default_config)
+    assert_true(any(model.model_id == "glm-chat" and model.api_format == "chat_completions" for model in default_config.models), "glm-chat config should be available after initial route seeding")
     default_config.codex_model_id = "qwen-instruct"
     cli.write_codex_files(default_config)
     qwen_text = Path(default_config.codex_config_path).read_text(encoding="utf-8")
     assert_true('model = "qwen-instruct"' in qwen_text, "Codex setup should allow switching to qwen-instruct")
+
+    persisted_config = tmpdir / "deleted_builtin_routes.json"
+    seeded = AppConfig.default()
+    seed_builtin_model_routes(seeded)
+    seeded.models = [model for model in seeded.models if model.model_id not in {"glm-chat", "deepseek-chat", "qwen-instruct"}]
+    save_config(seeded, persisted_config)
+    reloaded = load_config(persisted_config)
+    assert_true(
+        not any(model.model_id in {"glm-chat", "deepseek-chat", "qwen-instruct"} for model in reloaded.models),
+        "deleted built-in model routes should not be recreated when loading an existing config",
+    )
 
     case_config = make_config(tmpdir / "case_sensitive")
     case_config.codex_config_path = str(tmpdir / "case_sensitive" / "config.toml")

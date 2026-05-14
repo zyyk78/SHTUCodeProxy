@@ -40,6 +40,7 @@ if (-not $OneFileOnly) {
     --add-data "pyqt_gui.py;." `
     --add-data "config_store.py;." `
     --add-data "safe_io.py;." `
+    --add-data "VERSION;." `
     app.py
 
   Compress-Archive `
@@ -65,6 +66,7 @@ if (-not $OneDirOnly) {
     --add-data "pyqt_gui.py;." `
     --add-data "config_store.py;." `
     --add-data "safe_io.py;." `
+    --add-data "VERSION;." `
     app.py
 
   Copy-Item `
