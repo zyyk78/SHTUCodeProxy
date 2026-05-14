@@ -1,15 +1,24 @@
-﻿# SHTUCodeProxy
+# SHTUCodeProxy
 
-> **Important:** GPT-series models should use the `responses` API Format.
+> **Important:** GPT-series models should use the `responses` API Format. Chat-only models such as GLM, Qwen, or DeepSeek can use `chat_completions` when their upstream endpoint requires it.
 
-Current development version: **v4.1.1**
+Current release: **v4.2.5**
 
-SHTUCodeProxy is a cross-platform local proxy for connecting **Claude Code**, **Codex CLI**, and **Codex Desktop** to the ShanghaiTech University campus **GenAI Response API** or compatible local model endpoints.
+SHTUCodeProxy is a cross-platform local proxy and desktop configuration tool for connecting **Claude Code**, **Codex CLI**, **Codex Desktop**, and ordinary API clients to the ShanghaiTech University campus **GenAI API** or compatible model endpoints.
 
-This tool was created by **sunyb, ShanghaiTech University Library and Information Center** for internal campus use. It helps users access Claude Code through the university GenAI API by translating Claude Code's Anthropic Messages API traffic into upstream requests and converting streaming responses back into Claude Code-compatible Server-Sent Events. v4.1.1 also exposes an OpenAI Responses-compatible `/v1/responses` endpoint for Codex clients.
+It runs a local service, usually on `http://127.0.0.1:8082`, and translates between client-facing protocols and the selected upstream model format:
 
-> Note: SHTUCodeProxy is a local proxy tool created by sunyb for ShanghaiTech campus GenAI API access from Claude Code  ,CodeX and any other.
-> 
+- Claude Code: Anthropic Messages-style `/v1/messages`.
+- Codex CLI/Desktop: OpenAI Responses-style `/v1/responses`.
+- Generic API clients: local `/v1/responses` or `/v1/messages`.
+- Upstream models: `responses` or `chat_completions`, configured per model in the GUI.
+
+The PyQt5 desktop app can save model settings, write Claude Code and Codex client configuration files, start/stop the local proxy, restore client config backups, check Codex config health, and keep the proxy running in the tray on supported desktops.
+
+This tool was created by **sunyb, ShanghaiTech University Library and Information Center** for internal campus use. It is not an official Anthropic or OpenAI product.
+
+> Note: API keys are stored only in local configuration files. Do not commit or share your local `config.json`, Claude settings, Codex auth file, logs, or screenshots containing keys.
+
 <img width="1536" height="1024" alt="myImage (2)" src="https://github.com/user-attachments/assets/97a87f8a-a5ee-40fd-937c-d721abf662a1" />
 
 <img width="1422" height="992" alt="image" src="https://github.com/user-attachments/assets/41a9add0-c71b-4670-8346-549053f8bd2a" />
@@ -69,8 +78,8 @@ Codex CLI/Desktop
 
 ## Features
 
-- Windows GUI release; Linux/macOS can run from source with GUI or CLI mode.
-- Guided quick-start GUI with a one-click `Save + Connect + Launch` path plus manual step buttons.
+- PyQt5 desktop GUI for Windows and Linux release packages, plus source/CLI mode for advanced users.
+- Guided quick-start GUI with `Save Config`, `Write Client Config`, `Save + Connect`, and manual proxy controls.
 - Full-window scrolling for smaller displays.
 - Local Anthropic-compatible endpoint for Claude Code.
 - Local OpenAI Responses-compatible endpoint for Codex CLI and Codex Desktop.
@@ -86,8 +95,8 @@ Codex CLI/Desktop
 - One-click writing of Claude Code `settings.json`.
 - One-click Claude Code launch with proxy environment.
 - Auto-detection of npm-installed Claude Code.
-- Portable across Windows, Linux, and macOS user accounts where Python/Tkinter is available.
-- PyInstaller build script for Windows release packaging.
+- Portable Windows and Linux release packages; source mode is available for developers and macOS users.
+- PyInstaller build scripts for Windows and Linux release packaging.
 - Bidirectional tool-call translation for Claude Code `tool_use/tool_result` and upstream `tool_calls/function_call` protocols.
 
 ## Intended Audience
@@ -115,7 +124,7 @@ For normal conversational and many coding-assistance workflows, the proxy can be
 ```text
 .
 ├── app.py                 # GUI entry point
-├── gui.py                 # Tkinter desktop UI
+├── pyqt_gui.py            # PyQt5 desktop UI
 ├── proxy.py               # Anthropic Messages <-> Responses proxy
 ├── cli.py                 # Headless command-line tools
 ├── platform_utils.py      # Cross-platform path, script, and launch helpers
@@ -137,7 +146,7 @@ For normal conversational and many coding-assistance workflows, the proxy can be
 Use the recommended single-file release:
 
 ```text
-SHTUCodeProxy-v1.6.0-windows-x64.exe
+SHTUCodeProxy-v4.2.5-windows-x64.exe
 ```
 
 You do **not** need to install Python, pip, PyInstaller, or any Python packages. The single-file EXE bundles the Python runtime and required dependencies.
@@ -145,7 +154,7 @@ You do **not** need to install Python, pip, PyInstaller, or any Python packages.
 You still need:
 
 - Windows 10/11 or Windows Server with desktop UI support for the packaged EXE.
-- For Linux/macOS: Python 3.10+ from source; Tkinter/display server for GUI, or CLI mode for headless servers.
+- For Linux: use the release binary or python-launcher package on a desktop/X11/Wayland environment. CLI mode is available for headless servers.
 - Claude Code installed through npm or another method.
 - Access to ShanghaiTech GenAI Response API.
 - A valid GenAI Response API key.
@@ -155,6 +164,7 @@ You still need:
 Developers, Linux/macOS users running from source, or anyone rebuilding packages need:
 
 - Python 3.10+
+- PyQt5
 - PyInstaller
 
 Install build dependency:
@@ -182,7 +192,7 @@ For Codex CLI/Desktop, install and sign in to Codex separately. SHTUCodeProxy on
 Recommended download for normal users:
 
 ```text
-SHTUCodeProxy-v4.1.1-windows-x64.exe
+SHTUCodeProxy-v4.2.5-windows-x64.exe
 ```
 
 Double-click it directly. No Python installation is required.
@@ -190,10 +200,49 @@ Double-click it directly. No Python installation is required.
 Alternative portable zip package:
 
 ```text
-SHTUCodeProxy-v4.1.1-windows-x64.zip
+SHTUCodeProxy-v4.2.5-windows-x64.zip
 ```
 
 If you use the zip package, extract the whole folder and run `SHTUCodeProxy.exe` inside it.
+
+Linux desktop users can download either package:
+
+```text
+SHTUCodeProxy-v4.2.5-linux-x86_64
+SHTUCodeProxy-v4.2.5-linux-x86_64-python-launcher.tar.xz
+```
+
+For the single-file binary, make it executable and run it from a desktop session:
+
+```bash
+chmod +x SHTUCodeProxy-v4.2.5-linux-x86_64
+./SHTUCodeProxy-v4.2.5-linux-x86_64
+```
+
+For the python-launcher package, extract it and run:
+
+```bash
+tar -xf SHTUCodeProxy-v4.2.5-linux-x86_64-python-launcher.tar.xz
+cd SHTUCodeProxy-v4.2.5-linux-x86_64-python-launcher
+python3 run_shtucodeproxy.py
+```
+
+Linux notes:
+
+- A graphical desktop, X11 forwarding, or Wayland/XWayland session is required for the GUI.
+- Some Linux desktops may print Qt GLX warnings. If the window opens and works normally, they can usually be ignored.
+- On headless servers, use CLI mode instead of the GUI.
+
+macOS users should run from source for now.
+
+## Usage Notes
+
+- Click `Save Config` after editing model fields, model routing, client paths, or sandbox mode.
+- Click `Write Client Config` to update the selected client: Claude Code writes `settings.json`; Codex writes `config.toml` and `auth.json`.
+- Click `Save + Connect` for the normal path: save settings, write the selected client config, and start the local proxy.
+- SHTUCodeProxy can serve Claude Code and Codex at the same time as long as both clients point to the same local proxy port.
+- Do not edit generated client config repeatedly by hand unless needed; use the recovery buttons if a client config is broken.
+- Never publish your local API key, `config.json`, `.codex/auth.json`, Claude `settings.json`, diagnostic logs, or screenshots containing keys.
 
 ### 3. Configure Server Settings
 
@@ -408,7 +457,7 @@ Use `Check Codex Health` after changing Codex settings. It validates `config.tom
 
 Codex MCP servers are configured in Codex itself, not in SHTUCodeProxy. The proxy only sees the model-facing Responses request that Codex produces after loading MCP tools.
 
-Supported v4.1.1 tool flow:
+Supported tool flow:
 
 ```text
 Codex MCP server
@@ -547,7 +596,7 @@ Claude Code selects a route by the model ID it sends. The proxy then forwards to
 Stored locally at:
 
 ```text
-%APPDATA%\SHTUClaudeProxy\config.json
+%APPDATA%\SHTUCodeProxy\config.json
 ```
 
 This file may contain your API key in plaintext. Do not commit it.
@@ -580,14 +629,14 @@ Or install PyInstaller automatically:
 Outputs:
 
 ```text
-release\SHTUCodeProxy-v1.6.0-windows-x64.exe
-release\SHTUCodeProxy-windows-x64.zip
+release\SHTUCodeProxy-v4.2.5-windows-x64.exe
+release\SHTUCodeProxy-v4.2.5-windows-x64.zip
 dist\SHTUCodeProxy\SHTUCodeProxy.exe
 ```
 
-Use `release\SHTUCodeProxy-v1.6.0-windows-x64.exe` for normal users. It is a single-file executable and does not require Python or the `_internal` folder.
+Use `release\SHTUCodeProxy-v4.2.5-windows-x64.exe` for normal Windows users. It is a single-file executable and does not require Python or the `_internal` folder.
 
-Use `release\SHTUCodeProxy-windows-x64.zip` as the Windows portable folder package. If you distribute the zip package, users must extract the whole folder because the `_internal` runtime folder is required by the folder build.
+Use `release\SHTUCodeProxy-v4.2.5-windows-x64.zip` as the Windows portable folder package. If you distribute the zip package, users must extract the whole folder because the `_internal` runtime folder is required by the folder build.
 
 For Linux/macOS packaging from source, run:
 
@@ -595,225 +644,69 @@ For Linux/macOS packaging from source, run:
 ./build_unix.sh
 ```
 
-This generates a platform-specific single-file binary and a `.tar.gz` folder package under `release/`.
-
-## Version v2.0.0
-
-v2.0.0 hardens Claude Code tool-call compatibility for Chat Completions and Responses upstreams:
-
-- More robust streamed and non-streamed tool-call parsing.
-- Better handling for multiple tool calls in one response.
-- Safer tool argument repair for wrapped, cumulative, or JSON-like arguments.
-- Improved `tool_result` ordering for Chat Completions compatibility.
-- Claude model routing now accepts common date-suffixed model IDs.
-- GPT-series models should use `responses` API Format.
-
-## Version v1.9.0
-
-v1.9.0 adds real Claude Code tool-call bridging:
-
-- Converts Claude Code `tools` into upstream Chat Completions `tools` or Responses `tools`.
-- Converts assistant `tool_use` history into Chat Completions `tool_calls` or Responses `function_call` items.
-- Converts Claude Code `tool_result` messages into Chat Completions `tool` messages or Responses `function_call_output` items.
-- Converts upstream streamed `tool_calls` / `function_call` events back into Anthropic-style `tool_use` content blocks.
-- Returns `stop_reason: tool_use` when the upstream model requests tool execution.
-
-## Version v1.8.0
-
-v1.8.0 updates the default upstream configuration and GUI labels:
-
-- Renames `Responses Base URL` to `Base URL` in the GUI.
-- Changes the default API Format to `chat_completions`.
-- Uses `https://genaiapi.shanghaitech.edu.cn/api/v1/start` as the default Base URL for `chat_completions`.
-- Automatically switches Base URL to `https://genaiapi.shanghaitech.edu.cn/api/v1/response` when API Format is `responses`.
-- Adds clearer GUI hint text for the two API Format options.
-## Version v1.7.0
-
-v1.7.0 adds Linux/macOS source-based support while keeping the Windows v1.6.0 release package unchanged. It includes:
-
-- Linux/macOS GUI support from source with Tkinter.
-- Headless CLI mode for servers without a display.
-- X11 forwarding guidance for remote Linux GUI use.
-- Cross-platform Claude path, settings path, launch script, and launch helpers.
-- A Linux/macOS smoke test script.
-- A source zip package that extracts into its own directory.
-- English-only GUI text to avoid Linux font fallback issues.
-## Version v1.6.0
-
-v1.6.0 is the zero-install release. It includes:
-
-- A one-click setup path: save config, write Claude settings, start the proxy, then launch Claude Code.
-- Per-role Claude model routing for main, Haiku, Sonnet, Opus, and reasoning model variables.
-- A visible `Effective` routing summary so users can see which model is currently active.
-- Support for both OpenAI Responses-style and Chat Completions-style upstream endpoints.
-- Better upstream URL normalization and error reporting.
-- A larger scrollable UI for smaller displays.
-- A single-file Windows EXE release that does not require Python installation or a sidecar `_internal` folder.
-
+This generates a platform-specific single-file binary and a `.tar.xz` python-launcher folder package under `release/`.
 
 ## Linux and macOS Usage
 
-Windows users should normally download the single-file EXE from the Release page. Linux and macOS support is source-based at this stage.
+Windows users should normally download the single-file EXE from the Release page. Linux users can use the single-file binary or the python-launcher `.tar.xz` package. macOS users should run from source for now.
 
-### 1. Unpack the Source Package
-
-The Linux/macOS source package should unpack into its own directory:
+### Linux Release Binary
 
 ```bash
-unzip SHTUCodeProxy-v1.8.0-source-linux-macos.zip
-cd SHTUCodeProxy-v1.8.0-source-linux-macos
+chmod +x SHTUCodeProxy-v4.2.5-linux-x86_64
+./SHTUCodeProxy-v4.2.5-linux-x86_64
 ```
 
-Run the smoke test first:
+### Linux Python Launcher Package
 
 ```bash
-python3 -m py_compile app.py cli.py config_store.py gui.py platform_utils.py proxy.py smoke_test.py
+tar -xf SHTUCodeProxy-v4.2.5-linux-x86_64-python-launcher.tar.xz
+cd SHTUCodeProxy-v4.2.5-linux-x86_64-python-launcher
+python3 run_shtucodeproxy.py
+```
+
+Linux notes:
+
+- A desktop display, X11 forwarding, or Wayland/XWayland session is required for GUI mode.
+- Some desktops may print Qt GLX warnings. If the window opens and works normally, they can usually be ignored.
+- On headless servers, use CLI mode.
+
+### Source Package
+
+```bash
+unzip SHTUCodeProxy-v4.2.5-source-linux-macos.zip
+cd SHTUCodeProxy-v4.2.5-source
+python3 -m pip install -r requirements-build.txt
 python3 smoke_test.py
-```
-
-Expected output:
-
-```text
-SHTUCodeProxy smoke test passed
-```
-
-### 2. Configure API Key and Model
-
-Start once to generate `config.json`, or copy from `config.example.json`:
-
-```bash
-python3 cli.py show-config
-cp config.example.json config.json
-```
-
-Edit `config.json` with your editor:
-
-```bash
-nano config.json
-```
-
-At minimum, fill these fields in the model you want to use:
-
-```json
-{
-  "model_id": "GPT-5.5",
-  "base_url": "https://genaiapi.shanghaitech.edu.cn/api/v1/response",
-  "api_key": "PASTE_YOUR_GENAI_API_KEY_HERE",
-  "upstream_model": "GPT-5.5",
-  "api_format": "responses"
-}
-```
-
-Important fields:
-
-- `model_id`: the model name Claude Code will request.
-- `base_url`: the upstream GenAI API endpoint.
-- `api_key`: your GenAI API key. Keep it private.
-- `upstream_model`: the actual upstream model name sent to GenAI API.
-- `api_format`: use `responses` or `chat_completions`.
-
-> **Important:** For GPT-5 and newer GPT models, keep `api_format` as `responses`.
-
-For Chat Completions-compatible upstreams, use:
-
-```json
-"api_format": "chat_completions"
-```
-
-Model routing is controlled by `model_env`:
-
-```json
-"model_env": {
-  "ANTHROPIC_MODEL": "GPT-5.5",
-  "ANTHROPIC_DEFAULT_HAIKU_MODEL": "GPT-5.5",
-  "ANTHROPIC_DEFAULT_SONNET_MODEL": "GPT-5.5",
-  "ANTHROPIC_DEFAULT_OPUS_MODEL": "GPT-5.5",
-  "ANTHROPIC_REASONING_MODEL": "GPT-5.5"
-}
-```
-
-Each value must match one configured `model_id`. They can all be the same, or you can route different Claude roles to different configured models.
-
-### 3. GUI Mode
-
-Run the Tkinter GUI from source:
-
-```bash
 python3 app.py
 ```
 
-On Linux servers without a local desktop, use X11 forwarding:
-
-```bash
-ssh -X user@host
-cd SHTUCodeProxy-v1.8.0-source-linux-macos
-python3 app.py
-```
-
-If Tkinter is missing on Linux, install the system package for your distribution, for example:
-
-```bash
-sudo apt install python3-tk
-```
-
-### 4. Headless CLI Mode
+### Headless CLI Mode
 
 For Linux servers without GUI or X11 forwarding, use CLI mode.
 
-Check resolved config:
-
 ```bash
 python3 cli.py show-config
-```
-
-Write Claude Code settings:
-
-```bash
 python3 cli.py write-settings
+python3 cli.py serve
 ```
 
-This updates:
-
-```text
-~/.claude/settings.json
-```
-
-Install a helper launch script:
+Install a helper launch script if needed:
 
 ```bash
 python3 cli.py install-launch-script
 ```
 
-This creates:
-
-```text
-~/shtu-claude-proxy/claude-shtu.sh
-```
-
-Start the proxy in one terminal:
-
-```bash
-python3 cli.py serve
-```
-
-In another terminal, launch Claude Code through the helper script:
+Then run:
 
 ```bash
 ~/shtu-claude-proxy/claude-shtu.sh
 ```
-
-Alternatively, print environment variables and apply them manually:
-
-```bash
-python3 cli.py print-env
-```
-
-Then run `claude` in the same shell after exporting those variables.
 
 ## Run from Source
 
 ```powershell
-python .\gui.py
+python .\app.py
 ```
 
 Run proxy only:
@@ -901,7 +794,7 @@ Use the latest version. Older builds used keep-alive SSE behavior that could cau
 Never paste your API key into GitHub issues. The API key is stored locally in:
 
 ```text
-%APPDATA%\SHTUClaudeProxy\config.json
+%APPDATA%\SHTUCodeProxy\config.json
 ```
 
 ## Publishing Checklist
@@ -914,7 +807,7 @@ build/
 dist/
 *.spec
 __pycache__/
-%APPDATA%\SHTUClaudeProxy\config.json
+%APPDATA%\SHTUCodeProxy\config.json
 %USERPROFILE%\.claude\settings.json
 ```
 
