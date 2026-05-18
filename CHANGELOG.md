@@ -1,5 +1,28 @@
 ﻿# Changelog
 
+## v4.2.15 - 2026-05-18
+
+Runtime config and instance-safety fixes.
+
+### Fixed
+
+- `apply-config --start` now restarts an already running background proxy so model, key, host, and port changes take effect immediately.
+- Added CLI warnings when config is changed while a background proxy is still running without restart.
+- Added process-safe config writes and background start/stop locking to reduce conflicts from multiple app or CLI instances.
+- GUI saves now refresh the running proxy config and restart the listener automatically when host or port changes.
+- Non-Windows Codex config writes no longer preserve or create the Windows-only `[windows]` section.
+
+## v4.2.14 - 2026-05-18
+
+Proxy robustness fixes.
+
+### Fixed
+
+- Added UUID entropy to generated Anthropic and Responses IDs to avoid collisions under concurrent requests.
+- Added true non-streaming Responses JSON conversion before falling back to SSE streaming assembly.
+- Made SSE socket read timeouts fail loudly instead of hanging silently.
+- Improved split `<think>` tag handling across streaming chunks.
+
 ## v4.2.13 - 2026-05-18
 
 Linux headless release packaging.

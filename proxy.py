@@ -21,6 +21,8 @@ import time
 import traceback
 import urllib.error
 import urllib.request
+import uuid
+import socket
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -893,7 +895,10 @@ def iter_sse_lines(response: urllib.response.addinfourl) -> Iterable[Tuple[Optio
     event: Optional[str] = None
     data_lines: List[str] = []
     while True:
-        raw = response.readline()
+        try:
+            raw = response.readline()
+        except socket.timeout as exc:
+            raise TimeoutError("Timed out while waiting for upstream SSE data") from exc
         if not raw:
             if data_lines:
                 yield event, "\n".join(data_lines)
@@ -1074,10 +1079,12 @@ def codex_function_call_item(tool_call: Dict[str, Any], offset: int = 0) -> Dict
 def filter_thinking_text_delta(text: str, state: Dict[str, Any]) -> str:
     if not text:
         return ""
+    pending_think_open = state.pop("pending_think_open", "")
+    pending_think_close = state.pop("pending_think_close", "")
     pending_open = state.pop("pending_dsml_open", "")
     pending_close = state.pop("pending_dsml_close", "")
-    if pending_open or pending_close:
-        text = f"{pending_open}{pending_close}{text}"
+    if pending_think_open or pending_think_close or pending_open or pending_close:
+        text = f"{pending_think_open}{pending_think_close}{pending_open}{pending_close}{text}"
     output: List[str] = []
     position = 0
     while position < len(text):
@@ -1085,6 +1092,9 @@ def filter_thinking_text_delta(text: str, state: Dict[str, Any]) -> str:
         if state.get("in_thinking"):
             close_index = lower.find("</think>", position)
             if close_index < 0:
+                partial_close = partial_dsml_marker_start(lower, position, ("</think>",))
+                if partial_close >= 0:
+                    state["pending_think_close"] = text[partial_close:]
                 return "".join(output)
             position = close_index + len("</think>")
             state["in_thinking"] = False
@@ -1115,6 +1125,17 @@ def filter_thinking_text_delta(text: str, state: Dict[str, Any]) -> str:
             continue
         if open_index < 0:
             if not dsml_open:
+                partial_think_open = partial_dsml_marker_start(lower, position, ("<think",))
+                partial_think_close = partial_dsml_marker_start(lower, position, ("</think>",))
+                partial_candidates = [index for index in (partial_think_open, partial_think_close) if index >= 0]
+                if partial_candidates:
+                    partial_index = min(partial_candidates)
+                    output.append(text[position:partial_index])
+                    if partial_index == partial_think_open:
+                        state["pending_think_open"] = text[partial_index:]
+                    else:
+                        state["pending_think_close"] = text[partial_index:]
+                    break
                 partial_open = partial_dsml_marker_start(text, position, DSML_OPEN_PREFIXES)
                 if partial_open >= 0:
                     prefix = text[position:partial_open]
@@ -1267,15 +1288,15 @@ def chat_completion_json_to_responses(payload: Dict[str, Any], model: str, input
 
 
 def anthropic_message_id() -> str:
-    return f"msg_proxy_{now_ms()}"
+    return f"msg_proxy_{now_ms()}_{uuid.uuid4().hex[:12]}"
 
 
 def response_id() -> str:
-    return f"resp_proxy_{now_ms()}"
+    return f"resp_proxy_{now_ms()}_{uuid.uuid4().hex[:12]}"
 
 
 def response_output_item_id(index: int = 0) -> str:
-    return f"msg_proxy_{now_ms()}_{index}"
+    return f"msg_proxy_{now_ms()}_{index}_{uuid.uuid4().hex[:12]}"
 
 
 def responses_usage(input_tokens: int, output_text: str) -> Dict[str, int]:
@@ -1301,6 +1322,52 @@ def responses_completed_payload(request_id: str, model: str, output: List[Dict[s
 
 def responses_error_payload(message: str, error_type: str = "api_error") -> Dict[str, Any]:
     return {"error": {"message": message, "type": error_type}}
+
+
+def responses_json_output_text(output: List[Dict[str, Any]]) -> str:
+    text_parts: List[str] = []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "message" and isinstance(item.get("content"), list):
+            for part in item["content"]:
+                if isinstance(part, dict) and part.get("type") in ("output_text", "text"):
+                    text_parts.append(str(part.get("text") or ""))
+        elif item.get("type") in ("output_text", "text"):
+            text_parts.append(str(item.get("text") or item.get("content") or ""))
+    return "".join(text_parts)
+
+
+def responses_json_to_anthropic_message(payload: Dict[str, Any], model_config: ModelConfig) -> Dict[str, Any]:
+    output = payload.get("output") if isinstance(payload.get("output"), list) else []
+    content: List[Dict[str, Any]] = []
+    output_text = responses_json_output_text(output)
+    if output_text:
+        content.append({"type": "text", "text": output_text})
+    for item in output:
+        if isinstance(item, dict) and item.get("type") == "function_call":
+            content.append({
+                "type": "tool_use",
+                "id": item.get("call_id") or item.get("id") or f"toolu_proxy_{now_ms()}_{uuid.uuid4().hex[:8]}",
+                "name": item.get("name") or "tool",
+                "input": parse_tool_arguments(item.get("arguments", "")),
+            })
+    if not content:
+        content.append({"type": "text", "text": ""})
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    return {
+        "id": anthropic_message_id(),
+        "type": "message",
+        "role": "assistant",
+        "model": model_config.model_id,
+        "content": content,
+        "stop_reason": "tool_use" if any(part.get("type") == "tool_use" for part in content) else "end_turn",
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": int(usage.get("input_tokens") or 0),
+            "output_tokens": int(usage.get("output_tokens") or (max(1, len(output_text) // 4) if output_text else 0)),
+        },
+    }
 
 
 class ProxyHandler(BaseHTTPRequestHandler):
@@ -1514,6 +1581,19 @@ class ProxyHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 send_json(self, 502, responses_error_payload(f"Upstream response error: {exc}"))
                 return
+        upstream_payload["stream"] = False
+        try:
+            with open_upstream(upstream_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
+                raw_payload = response.read().decode("utf-8", errors="replace")
+            send_json(self, 200, responses_json_to_anthropic_message(json.loads(raw_payload), model_config))
+            return
+        except urllib.error.HTTPError as exc:
+            message = upstream_error_message(exc)
+            log(f"upstream http error model={model_config.model_id} status={exc.code} body={message[:500]}")
+            send_json(self, 502, {"type": "error", "error": {"type": "api_error", "message": message}})
+            return
+        except Exception as exc:
+            log(f"non-stream responses fallback model={model_config.model_id} error={exc}")
         upstream_payload["stream"] = True
         text_parts: List[str] = []
         tool_calls: List[Dict[str, Any]] = []
@@ -1662,6 +1742,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.close_connection = True
 
     def handle_non_streaming(self, body: Dict[str, Any], upstream_payload: Dict[str, Any], auth_token: str, upstream_url: str, timeout: int, model_config: ModelConfig) -> None:
+        upstream_payload["stream"] = False
+        try:
+            with open_upstream(upstream_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
+                raw_payload = response.read().decode("utf-8", errors="replace")
+            payload = json.loads(raw_payload)
+            if isinstance(payload.get("output"), list):
+                send_json(self, 200, payload)
+                return
+            raise ValueError("Responses JSON missing output list")
+        except urllib.error.HTTPError as exc:
+            send_json(self, 502, responses_error_payload(upstream_error_message(exc)))
+            return
+        except Exception as exc:
+            log(f"codex non-stream responses fallback model={model_config.model_id} error={exc}")
         upstream_payload["stream"] = True
         text_parts: List[str] = []
         tool_calls: List[Dict[str, Any]] = []

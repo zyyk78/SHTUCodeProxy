@@ -1,14 +1,77 @@
 from __future__ import annotations
 
+import os
+import hashlib
 import shutil
 import subprocess
+import time
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from tempfile import gettempdir
 from typing import Callable, Optional
 
 
 ORIGINAL_BACKUP_SUFFIX = ".original.bak"
 ORIGINAL_MISSING_SUFFIX = ".original.missing"
+
+
+def _process_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return str(pid) in result.stdout
+        except (OSError, subprocess.SubprocessError):
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+@contextmanager
+def file_lock(lock_name: str, *, timeout: float = 5.0):
+    lock_dir = Path(gettempdir()) / "SHTUCodeProxy"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock = lock_dir / f"{lock_name}.lock"
+    deadline = time.time() + timeout
+    while True:
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(str(os.getpid()))
+            break
+        except FileExistsError:
+            try:
+                pid_text = lock.read_text(encoding="utf-8").strip()
+                stale = not pid_text.isdigit() or not _process_is_running(int(pid_text))
+            except OSError:
+                stale = False
+            if stale:
+                try:
+                    lock.unlink()
+                    continue
+                except OSError:
+                    pass
+            if time.time() >= deadline:
+                raise TimeoutError(f"Timed out waiting for lock: {lock}")
+            time.sleep(0.05)
+    try:
+        yield lock
+    finally:
+        try:
+            if lock.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                lock.unlink()
+        except OSError:
+            pass
 
 
 def powershell_copy_text(source: Path, target: Path) -> None:
@@ -132,38 +195,41 @@ def atomic_write_text(
     validate: Optional[Callable[[str], None]] = None,
     backup: bool = True,
 ) -> Optional[Path]:
-    if validate:
-        validate(text)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
-        try:
-            if target.read_text(encoding=encoding) == text:
-                return None
-        except UnicodeDecodeError:
-            pass
-    backup_path = backup_existing_file(target) if backup else None
-    temp = target.with_name(f".{target.name}.tmp")
-    try:
-        try:
-            temp.write_text(text, encoding=encoding)
-        except PermissionError:
-            fallback_dir = Path(__file__).resolve().parent / "backups"
-            fallback_dir.mkdir(parents=True, exist_ok=True)
-            temp = fallback_dir / f".{target.name}.tmp"
-            temp.write_text(text, encoding=encoding)
+    digest = hashlib.sha256(str(target.expanduser().resolve()).encode("utf-8")).hexdigest()[:16]
+    lock_name = f"write-{digest}"
+    with file_lock(lock_name):
         if validate:
-            validate(temp.read_text(encoding=encoding))
-        try:
-            temp.replace(target)
-        except PermissionError:
+            validate(text)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
             try:
-                shutil.copy2(temp, target)
+                if target.read_text(encoding=encoding) == text:
+                    return None
+            except UnicodeDecodeError:
+                pass
+        backup_path = backup_existing_file(target) if backup else None
+        temp = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+        try:
+            try:
+                temp.write_text(text, encoding=encoding)
             except PermissionError:
-                if target.drive or str(target).startswith("\\\\"):
-                    powershell_copy_text(temp, target)
-                else:
-                    raise
-    finally:
-        if temp.exists():
-            temp.unlink()
-    return backup_path
+                fallback_dir = Path(__file__).resolve().parent / "backups"
+                fallback_dir.mkdir(parents=True, exist_ok=True)
+                temp = fallback_dir / f".{target.name}.{os.getpid()}.tmp"
+                temp.write_text(text, encoding=encoding)
+            if validate:
+                validate(temp.read_text(encoding=encoding))
+            try:
+                temp.replace(target)
+            except PermissionError:
+                try:
+                    shutil.copy2(temp, target)
+                except PermissionError:
+                    if target.drive or str(target).startswith("\\\\"):
+                        powershell_copy_text(temp, target)
+                    else:
+                        raise
+        finally:
+            if temp.exists():
+                temp.unlink()
+        return backup_path

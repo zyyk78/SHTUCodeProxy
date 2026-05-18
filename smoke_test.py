@@ -5,6 +5,8 @@ import os
 import subprocess
 import sys
 import shutil
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,7 +27,10 @@ from proxy import (
     parse_pseudo_function_calls,
     responses_completed_payload,
     responses_request_to_chat_completions,
+    responses_json_to_anthropic_message,
     responses_request_to_upstream,
+    anthropic_message_id,
+    response_id,
     chat_completion_json_to_responses,
     stop_reason_from_done,
     tool_arguments_json,
@@ -609,6 +614,15 @@ def exercise_codex_config_writer(tmpdir: Path) -> None:
     assert_true('[tui.model_availability_nux]' in repaired, "codex config writer should preserve unrelated Codex tables")
     assert_true("[model_providers.shtu_proxy]" in repaired, "codex config writer should recover with a clean proxy config")
 
+    with patch("cli.os.name", "posix"):
+        posix_preserved = cli.codex_preserved_config_block('[features]\nhooks = false\n[windows]\nsandbox = "elevated"\nwsl_proxy = true\n')
+        assert_true('[windows]' not in posix_preserved, "non-Windows Codex config should not preserve a Windows-only section")
+        assert_true('hooks = true' in posix_preserved, "non-Windows Codex config should still repair features.hooks")
+    with patch("cli.os.name", "nt"):
+        windows_preserved = cli.codex_preserved_config_block('[windows]\nsandbox = "read-only"\nwsl_proxy = true\n')
+        assert_true('[windows]' in windows_preserved and 'sandbox = "elevated"' in windows_preserved, "Windows Codex config should keep and repair windows sandbox")
+        assert_true('wsl_proxy = true' in windows_preserved, "Windows Codex config should preserve unmanaged windows settings")
+
     once_repaired = repaired
     cli.write_codex_files(config)
     twice_repaired = config_file.read_text(encoding="utf-8")
@@ -785,6 +799,16 @@ def exercise_headless_apply_config(tmpdir: Path) -> None:
             assert_true("model_env contains unknown model id" in str(exc), "apply-config should reject unknown Claude route IDs")
         else:
             raise AssertionError("apply-config accepted an unknown Claude route model")
+
+        with patch("cli.background_proxy_running", return_value=True), patch("cli.restart_background") as restart_background:
+            restarted = cli.apply_config_file(source, start=True)
+            assert_true(restarted.default_model_id == "file-smoke", "apply-config --start should still apply config before restart")
+            assert_true(restart_background.call_count == 1, "apply-config --start should restart an already running background proxy")
+        with patch("cli.background_proxy_running", return_value=True):
+            output = StringIO()
+            with redirect_stdout(output):
+                cli.apply_config_file(source, start=False)
+            assert_true("restart" in output.getvalue().lower(), "apply-config without --start should warn when background proxy is running")
     finally:
         if old_env_config is None:
             os.environ.pop("CLAUDE_RESPONSES_PROXY_CONFIG", None)
@@ -798,6 +822,14 @@ def exercise_background_start_regressions() -> None:
     with patch.object(sys, "frozen", False, create=True):
         command = cli.background_command()
         assert_true(command[-1] == "serve" and command[0] == sys.executable, "source background start should run cli.py serve")
+    with patch("cli.read_proxy_pid", return_value=12345), patch("cli.process_is_running", return_value=True):
+        assert_true(cli.background_proxy_running(), "running PID should be detected as an active background proxy")
+    with patch("cli.os.name", "nt"), patch("cli.ctypes.windll.kernel32.OpenProcess", return_value=0), patch("cli.subprocess.run") as tasklist:
+        tasklist.return_value.stdout = "python.exe                 12345 Console"
+        assert_true(cli.process_is_running(12345), "Windows process detection should use tasklist instead of os.kill")
+    with patch("cli.stop_background") as stop_background, patch("cli.start_background") as start_background:
+        cli.restart_background(AppConfig.default())
+        assert_true(stop_background.call_count == 1 and start_background.call_count == 1, "restart should stop then start the background proxy")
 
 
 def exercise_multi_tool_call_delta() -> None:
@@ -946,6 +978,27 @@ def exercise_tool_argument_repair_and_thinking_filter() -> None:
         filter_thinking_text_delta("L｜tool_calls", split_dsml_state) == "",
         "split DSML wrapper suffix should complete suppression",
     )
+    split_think_state = {"in_thinking": False}
+    assert_true(filter_thinking_text_delta("hello <thi", split_think_state) == "hello ", "partial think opening tag should be buffered")
+    assert_true(filter_thinking_text_delta("nk>hidden</thi", split_think_state) == "", "split thinking body and closing prefix should be suppressed")
+    assert_true(filter_thinking_text_delta("nk>visible", split_think_state) == "visible", "text after split thinking close should remain visible")
+
+
+def exercise_id_uniqueness_and_non_stream_json() -> None:
+    message_ids = {anthropic_message_id() for _ in range(200)}
+    response_ids = {response_id() for _ in range(200)}
+    assert_true(len(message_ids) == 200 and len(response_ids) == 200, "proxy response IDs should be unique even within the same millisecond")
+    model = ModelConfig("Smoke", "smoke-model", "https://example.invalid/v1/response", "key", "smoke-upstream", "responses")
+    converted = responses_json_to_anthropic_message({
+        "output": [
+            {"type": "message", "content": [{"type": "output_text", "text": "hello"}]},
+            {"type": "function_call", "call_id": "call_1", "name": "exec_command", "arguments": {"cmd": "pwd"}},
+        ],
+        "usage": {"input_tokens": 3, "output_tokens": 5},
+    }, model)
+    assert_true(converted["content"][0] == {"type": "text", "text": "hello"}, "non-stream Responses JSON text should convert to Anthropic text")
+    assert_true(converted["content"][1]["name"] == "exec_command" and converted["content"][1]["input"] == {"cmd": "pwd"}, "non-stream Responses JSON tool call should convert to Anthropic tool_use")
+    assert_true(converted["stop_reason"] == "tool_use", "non-stream Responses JSON with function_call should stop as tool_use")
 
 
 def exercise_cross_platform_tool_matrix() -> None:
@@ -1048,6 +1101,7 @@ def main() -> int:
         exercise_multi_tool_call_delta()
         exercise_cumulative_tool_call_delta()
         exercise_tool_argument_repair_and_thinking_filter()
+        exercise_id_uniqueness_and_non_stream_json()
         exercise_cross_platform_tool_matrix()
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)

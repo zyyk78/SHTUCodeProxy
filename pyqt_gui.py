@@ -95,6 +95,7 @@ def install_diagnostics() -> None:
 
 import cli
 import proxy
+from safe_io import file_lock
 from config_store import (
     AppConfig,
     CODEX_SANDBOX_MODES,
@@ -1181,12 +1182,22 @@ class IosProxyApp(QMainWindow):
         return True
 
     def save(self) -> bool:
+        was_running = self.server is not None
+        previous_endpoint = (self.config_data.host, self.config_data.port)
         pending_model_env = self.selected_model_env()
         pending_codex_model_id = self.selected_codex_model_id()
         if not self.apply_model(pending_model_env, pending_codex_model_id, persist=False) or not self.sync_server_fields():
             return False
         save_config(self.config_data)
+        proxy.ACTIVE_CONFIG = self.config_data
         self.append_log(f"Saved config: {config_path()}")
+        current_endpoint = (self.config_data.host, self.config_data.port)
+        if was_running and current_endpoint != previous_endpoint:
+            self.append_log("Proxy endpoint changed; restarting listener with saved config.")
+            self.stop_proxy()
+            return self.start_proxy()
+        if was_running:
+            self.append_log("Running proxy config updated.")
         return True
 
     def start_proxy(self) -> bool:
@@ -1435,6 +1446,12 @@ def run() -> int:
     install_diagnostics()
     set_windows_app_id()
     app = QApplication(sys.argv)
+    instance_lock = file_lock("gui-instance", timeout=0.2)
+    try:
+        instance_lock.__enter__()
+    except TimeoutError:
+        QMessageBox.warning(None, "SHTUCodeProxy already running", "Another SHTUCodeProxy window is already running. Please use the existing window or tray icon.")
+        return 1
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("SHTUCodeProxy")
     app.setApplicationDisplayName("SHTUCodeProxy")
@@ -1452,4 +1469,7 @@ def run() -> int:
     window.setWindowIcon(app_icon)
     window.show()
     debug_log(f"window shown debug_log={DEBUG_LOG_PATH}")
-    return app.exec_()
+    try:
+        return app.exec_()
+    finally:
+        instance_lock.__exit__(None, None, None)

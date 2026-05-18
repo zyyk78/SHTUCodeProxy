@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import socket
@@ -14,7 +15,7 @@ from typing import Dict
 from config_store import AppConfig, CODEX_SANDBOX_MODES, DEFAULT_CHAT_COMPLETIONS_URL, DEFAULT_CODEX_SANDBOX_MODE, DEFAULT_RESPONSES_URL, MODEL_ENV_KEYS, ModelConfig, config_path, load_config, save_config
 from platform_utils import app_dir, launch_script_filename, launch_script_text
 from proxy import ProxyHandler, ThreadingHTTPServer
-from safe_io import atomic_write_text, backup_existing_file, restore_latest_backup, snapshot_original_file
+from safe_io import atomic_write_text, backup_existing_file, file_lock, restore_latest_backup, snapshot_original_file
 
 
 def claude_env(config: AppConfig) -> Dict[str, str]:
@@ -180,11 +181,10 @@ def codex_preserved_config_block(existing: str) -> str:
     lines.append("[features]")
     for key, value in feature_values.items():
         lines.append(f"{key} = {format_toml_value(value)}")
-    windows = parsed.get("windows") if isinstance(parsed.get("windows"), dict) else parse_flat_toml_section(existing, "windows")
-    windows_values = dict(windows)
     if os.name == "nt":
+        windows = parsed.get("windows") if isinstance(parsed.get("windows"), dict) else parse_flat_toml_section(existing, "windows")
+        windows_values = dict(windows)
         windows_values["sandbox"] = "elevated"
-    if windows_values:
         lines.append("")
         lines.append("[windows]")
         for key, value in windows_values.items():
@@ -399,6 +399,25 @@ def log_path() -> Path:
 def process_is_running(pid: int) -> bool:
     if pid <= 0:
         return False
+    if os.name == "nt":
+        synchronize = 0x00100000
+        wait_timeout = 0x00000102
+        handle = ctypes.windll.kernel32.OpenProcess(synchronize, False, int(pid))
+        if handle:
+            try:
+                return ctypes.windll.kernel32.WaitForSingleObject(handle, 0) == wait_timeout
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return str(pid) in result.stdout
+        except (OSError, subprocess.SubprocessError):
+            return False
     try:
         os.kill(pid, 0)
         return True
@@ -465,6 +484,7 @@ def configure_model(args: argparse.Namespace) -> AppConfig:
     if args.port:
         config.port = args.port
     save_config(config)
+    warn_restart_required_if_running()
     return config
 
 
@@ -502,7 +522,9 @@ def apply_config_file(path: Path, *, write_claude: bool = False, write_codex: bo
         print(f"Wrote Codex config: {config_file}")
         print(f"Wrote Codex auth: {auth_file}")
     if start:
-        start_background(config)
+        restart_background(config) if background_proxy_running() else start_background(config)
+    else:
+        warn_restart_required_if_running()
     return config
 
 
@@ -519,67 +541,88 @@ def use_model(model_id: str, *, codex: bool = False, claude: bool = False) -> Ap
     if codex:
         config.codex_model_id = model_id
     save_config(config)
+    warn_restart_required_if_running()
     return config
 
 
 def start_background(config: AppConfig) -> None:
-    existing_pid = read_proxy_pid()
-    if existing_pid and process_is_running(existing_pid):
-        print(f"Proxy already running with PID {existing_pid}")
-        return
-    app_dir().mkdir(parents=True, exist_ok=True)
-    stdout = log_path().open("ab")
-    stderr = subprocess.STDOUT
-    command = background_command()
-    env = os.environ.copy()
-    if getattr(sys, "frozen", False):
-        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
-    process = subprocess.Popen(
-        command,
-        cwd=str(Path(__file__).resolve().parent),
-        env=env,
-        stdin=subprocess.DEVNULL,
-        stdout=stdout,
-        stderr=stderr,
-        start_new_session=(os.name != "nt"),
-    )
-    stdout.close()
-    pid_path().write_text(str(process.pid), encoding="utf-8")
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        if is_port_listening(config.host, config.port):
-            print(f"Started proxy in background: PID {process.pid}")
-            print(f"Proxy URL: http://{config.host}:{config.port}")
-            print(f"Log file: {log_path()}")
+    with file_lock("background-proxy", timeout=5.0):
+        existing_pid = read_proxy_pid()
+        if existing_pid and process_is_running(existing_pid):
+            print(f"Proxy already running with PID {existing_pid}")
             return
-        if process.poll() is not None:
-            break
-        time.sleep(0.2)
-    tail = recent_log_tail()
-    pid_path().unlink(missing_ok=True)
-    print(f"Proxy failed to listen on http://{config.host}:{config.port}", file=sys.stderr)
-    print(f"Log file: {log_path()}", file=sys.stderr)
-    if tail:
-        print("Recent proxy log:", file=sys.stderr)
-        print(tail, file=sys.stderr)
-    raise SystemExit(1)
-
-
-def stop_background() -> None:
-    pid = read_proxy_pid()
-    if not pid:
-        print("No background proxy PID found")
-        return
-    if not process_is_running(pid):
+        if existing_pid:
+            pid_path().unlink(missing_ok=True)
+        app_dir().mkdir(parents=True, exist_ok=True)
+        stdout = log_path().open("ab")
+        stderr = subprocess.STDOUT
+        command = background_command()
+        env = os.environ.copy()
+        if getattr(sys, "frozen", False):
+            env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+        process = subprocess.Popen(
+            command,
+            cwd=str(Path(__file__).resolve().parent),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout,
+            stderr=stderr,
+            start_new_session=(os.name != "nt"),
+        )
+        stdout.close()
+        atomic_write_text(pid_path(), str(process.pid), backup=False)
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if is_port_listening(config.host, config.port):
+                print(f"Started proxy in background: PID {process.pid}")
+                print(f"Proxy URL: http://{config.host}:{config.port}")
+                print(f"Log file: {log_path()}")
+                return
+            if process.poll() is not None:
+                break
+            time.sleep(0.2)
+        tail = recent_log_tail()
         pid_path().unlink(missing_ok=True)
-        print(f"Proxy PID {pid} is not running")
-        return
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, text=True, timeout=10)
-    else:
-        os.kill(pid, 15)
-    pid_path().unlink(missing_ok=True)
-    print(f"Stopped proxy PID {pid}")
+        print(f"Proxy failed to listen on http://{config.host}:{config.port}", file=sys.stderr)
+        print(f"Log file: {log_path()}", file=sys.stderr)
+        if tail:
+            print("Recent proxy log:", file=sys.stderr)
+            print(tail, file=sys.stderr)
+        raise SystemExit(1)
+
+
+def stop_background() -> bool:
+    with file_lock("background-proxy", timeout=5.0):
+        pid = read_proxy_pid()
+        if not pid:
+            print("No background proxy PID found")
+            return False
+        if not process_is_running(pid):
+            pid_path().unlink(missing_ok=True)
+            print(f"Proxy PID {pid} is not running")
+            return False
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, text=True, timeout=10)
+        else:
+            os.kill(pid, 15)
+        pid_path().unlink(missing_ok=True)
+        print(f"Stopped proxy PID {pid}")
+        return True
+
+
+def background_proxy_running() -> bool:
+    pid = read_proxy_pid()
+    return bool(pid and process_is_running(pid))
+
+
+def warn_restart_required_if_running() -> None:
+    if background_proxy_running():
+        print("Warning: background proxy is already running; run `restart` or use `apply-config --start` for changes to take effect.")
+
+
+def restart_background(config: AppConfig) -> None:
+    stop_background()
+    start_background(config)
 
 
 def show_status(config: AppConfig) -> None:
@@ -675,6 +718,7 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser("install-launch-script", help="Install claude-shtu launch script")
     subparsers.add_parser("serve", help="Run proxy server without GUI")
     subparsers.add_parser("start", help="Run proxy server in the background")
+    subparsers.add_parser("restart", help="Restart background proxy with current config")
     subparsers.add_parser("stop", help="Stop proxy server started by CLI start")
     subparsers.add_parser("status", help="Show background proxy and port status")
 
@@ -715,6 +759,8 @@ def main(argv: list[str] | None = None) -> int:
         serve(config)
     elif args.command == "start":
         start_background(config)
+    elif args.command == "restart":
+        restart_background(config)
     elif args.command == "stop":
         stop_background()
     elif args.command == "status":
