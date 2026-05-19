@@ -1,5 +1,25 @@
 ﻿# Changelog
 
+## v4.3.0 - 2026-05-19
+
+Streaming default, GPT-5.5 Responses compatibility, and multimodal validation release.
+
+### Added
+
+- Added a configurable default_stream setting. Requests still honor explicit stream=true or stream=false; the setting only applies when the client omits stream.
+- Added GUI, CLI, and headless config support for the default streaming behavior.
+
+### Fixed
+
+- Fixed non-streaming /v1/responses with Responses upstreams so it returns Responses JSON instead of Anthropic message JSON.
+- Fixed non-streaming /v1/messages with Responses upstreams so it returns Anthropic message JSON instead of raw Responses JSON.
+- Preserved structured image, file, audio, and document content for compatible upstream routes instead of converting supported multimodal parts to plain text.
+
+### Verified
+
+- Re-tested GLM, DeepSeek, Qwen, and GPT-5.5 across streaming, non-streaming, tool calls, multi-turn tool results, and multimodal image input where supported.
+
+
 ## v4.2.15 - 2026-05-18
 
 Runtime config and instance-safety fixes.
@@ -447,5 +467,6 @@ Stable guided-setup release.
 - Moved advanced actions into a separate optional section.
 - Improved non-streaming and streaming upstream error reporting.
 - Updated the release zip with the latest Windows build.
+
 
 

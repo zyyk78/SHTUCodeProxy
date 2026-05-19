@@ -374,6 +374,7 @@ def print_env(config: AppConfig) -> None:
 def show_config(config: AppConfig) -> None:
     print(f"Config path: {config_path()}")
     print(f"Proxy URL: http://{config.host}:{config.port}")
+    print(f"Default streaming: {'enabled' if config.default_stream else 'disabled'}")
     print(f"Claude path: {config.claude_path}")
     print(f"Claude settings: {config.claude_settings_path}")
     print(f"Codex model: {config.codex_model_id}")
@@ -483,6 +484,8 @@ def configure_model(args: argparse.Namespace) -> AppConfig:
         config.host = args.host
     if args.port:
         config.port = args.port
+    if getattr(args, "stream_default", None) is not None:
+        config.default_stream = bool(args.stream_default)
     save_config(config)
     warn_restart_required_if_running()
     return config
@@ -702,6 +705,10 @@ def main(argv: list[str] | None = None) -> int:
     configure_parser.add_argument("--name", help="Display name for show-config")
     configure_parser.add_argument("--host", help="Proxy listen host, default keeps current config")
     configure_parser.add_argument("--port", type=int, help="Proxy listen port, default keeps current config")
+    stream_group = configure_parser.add_mutually_exclusive_group()
+    stream_group.add_argument("--default-stream", dest="stream_default", action="store_true", help="Use streaming when client requests omit stream")
+    stream_group.add_argument("--no-default-stream", dest="stream_default", action="store_false", help="Use non-streaming when client requests omit stream")
+    configure_parser.set_defaults(stream_default=None)
     configure_parser.add_argument("--default", action="store_true", help="Use this model for Claude model routing")
     configure_parser.add_argument("--codex", action="store_true", help="Use this model for Codex config")
     apply_parser = subparsers.add_parser("apply-config", help="Load model/client settings from one JSON file")

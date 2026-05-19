@@ -726,6 +726,10 @@ class IosProxyApp(QMainWindow):
         self.add_field(server_layout, 0, "Port", self.port_edit, 2)
         self.add_field(server_layout, 0, "Current Main Model", self.default_model_edit, 4)
         self.add_field(server_layout, 0, "Timeout", self.timeout_edit, 6)
+        self.default_stream_check = QCheckBox("Default streaming")
+        self.default_stream_check.setToolTip("Use streaming responses when the client request does not explicitly set stream=false.")
+        self.default_stream_check.setChecked(bool(self.config_data.default_stream))
+        server_layout.addWidget(self.default_stream_check, 0, 8, 1, 2, alignment=Qt.AlignVCenter)
         self.add_path_row(server_layout, 1, "Claude Code Path", self.claude_path_edit, self.browse_claude_path)
         self.add_path_row(server_layout, 2, "Claude Settings Path", self.claude_settings_path_edit, self.browse_claude_settings_path)
         self.add_path_row(server_layout, 3, "Codex config.toml Path", self.codex_config_path_edit, self.browse_codex_config_path)
@@ -1178,6 +1182,7 @@ class IosProxyApp(QMainWindow):
         self.config_data.claude_settings_path = portable_settings_path(self.claude_settings_path_edit.text().strip() or default_claude_settings_path())
         self.config_data.codex_config_path = portable_codex_config_path(self.codex_config_path_edit.text().strip() or default_codex_config_path())
         self.config_data.codex_auth_path = portable_codex_auth_path(self.codex_auth_path_edit.text().strip() or default_codex_auth_path())
+        self.config_data.default_stream = self.default_stream_check.isChecked()
         self.config_data.diagnostic_logging = self.diagnostic_logging_check.isChecked()
         return True
 

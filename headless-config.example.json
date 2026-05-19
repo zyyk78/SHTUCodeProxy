@@ -4,6 +4,7 @@
   "default_model_id": "GPT-5.5",
   "codex_model_id": "GPT-5.5",
   "codex_sandbox_mode": "workspace-write",
+  "default_stream": true,
   "model_env": {
     "ANTHROPIC_MODEL": "GPT-5.5",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-chat",

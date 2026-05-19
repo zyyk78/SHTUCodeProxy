@@ -61,6 +61,7 @@ def make_config(tmpdir: Path) -> AppConfig:
         claude_settings_path=str(tmpdir / ".claude" / "settings.json"),
         codex_config_path=str(tmpdir / ".codex" / "config.toml"),
         codex_auth_path=str(tmpdir / ".codex" / "auth.json"),
+        default_stream=True,
         diagnostic_logging=False,
         models=[model],
     )
@@ -285,6 +286,7 @@ def exercise_model_suffix_routing() -> None:
         claude_settings_path="/tmp/settings.json",
         codex_config_path="/tmp/codex-config.toml",
         codex_auth_path="/tmp/codex-auth.json",
+        default_stream=True,
         diagnostic_logging=False,
         models=[default_model, haiku_model, sonnet_alias, direct_deepseek],
     )
@@ -351,6 +353,7 @@ def exercise_pyqt_model_management_regressions() -> None:
         claude_settings_path="settings.json",
         codex_config_path="config.toml",
         codex_auth_path="auth.json",
+        default_stream=True,
         diagnostic_logging=False,
         models=models,
     )
@@ -465,6 +468,38 @@ def exercise_codex_responses_passthrough() -> None:
     assert_true(chat_payload["messages"][first_user_index + 4]["content"] == "continue", "codex multi-turn user context should remain ordered")
     assert_true(chat_payload["tools"][0]["function"]["name"] == "shell", "codex response tool should convert to chat tool")
     assert_true(chat_payload["tools"][1]["function"]["name"] == "read_file", "codex should preserve multiple tools")
+
+
+def exercise_default_stream_config() -> None:
+    anthropic_body = {"model": "smoke-model", "messages": [{"role": "user", "content": "hello"}]}
+    assert_true(
+        anthropic_messages_to_responses(anthropic_body, "fallback", "upstream", default_stream=True)["stream"] is True,
+        "Anthropic to Responses should default to streaming when configured",
+    )
+    assert_true(
+        anthropic_messages_to_responses(anthropic_body, "fallback", "upstream", default_stream=False)["stream"] is False,
+        "Anthropic to Responses should honor configured non-stream default when stream is omitted",
+    )
+    explicit_non_stream = dict(anthropic_body, stream=False)
+    assert_true(
+        anthropic_messages_to_chat_completions(explicit_non_stream, "fallback", "upstream", default_stream=True)["stream"] is False,
+        "Explicit Anthropic stream=false must override the configured streaming default",
+    )
+
+    responses_body = {"model": "smoke-model", "input": "hello"}
+    assert_true(
+        responses_request_to_upstream(responses_body, "fallback", "upstream", default_stream=True)["stream"] is True,
+        "Responses passthrough should default to streaming when configured",
+    )
+    assert_true(
+        responses_request_to_chat_completions(responses_body, "fallback", "upstream", default_stream=False)["stream"] is False,
+        "Responses to Chat should honor configured non-stream default when stream is omitted",
+    )
+    explicit_stream = dict(responses_body, stream=True)
+    assert_true(
+        responses_request_to_upstream(explicit_stream, "fallback", "upstream", default_stream=False)["stream"] is True,
+        "Explicit Responses stream=true must override the configured non-stream default",
+    )
 
     kind, parsed = extract_text_delta("response.function_call_arguments.done", json.dumps({
         "type": "response.function_call_arguments.done",
@@ -1047,6 +1082,88 @@ def exercise_cross_platform_tool_matrix() -> None:
         assert_true(json.loads(linux_shell["arguments"])["command"] == ["bash", "-lc", "echo ok"], "Linux shell aliases should use bash -lc")
 
 
+def exercise_multimodal_chat_passthrough() -> None:
+    image_url = "https://example.invalid/image.png"
+    responses_payload = responses_request_to_chat_completions({
+        "model": "qwen-instruct",
+        "input": [{
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "describe image"},
+                {"type": "input_image", "image_url": image_url},
+            ],
+        }],
+    }, "qwen-instruct")
+    content = responses_payload["messages"][0]["content"]
+    assert_true(isinstance(content, list), "Responses image input should stay as multimodal chat content")
+    assert_true(content[1] == {"type": "image_url", "image_url": {"url": image_url}}, "Responses image_url should pass through to chat completions")
+
+    anthropic_payload = anthropic_messages_to_chat_completions({
+        "model": "qwen-instruct",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe image"},
+                {"type": "image", "source": {"type": "url", "url": image_url}},
+                {"type": "document", "source": {"type": "url", "url": "https://example.invalid/a.pdf"}},
+            ],
+        }],
+    }, "qwen-instruct")
+    anthropic_content = anthropic_payload["messages"][0]["content"]
+    assert_true(isinstance(anthropic_content, list), "Anthropic image input should stay as multimodal chat content")
+    assert_true(anthropic_content[1] == {"type": "image_url", "image_url": {"url": image_url}}, "Anthropic image source should pass through to chat completions")
+    assert_true(anthropic_content[2] == {"type": "file", "file": {"file_url": "https://example.invalid/a.pdf"}}, "Anthropic document URL should pass through to chat file content")
+
+    converted = chat_completion_json_to_responses({
+        "choices": [{"message": {"role": "assistant", "content": "vision ok"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+    }, "qwen-instruct", 10)
+    assert_true(converted["object"] == "response" and isinstance(converted["output"], list), "Chat JSON should stay as Responses format for /v1/responses")
+    anthropic_message = responses_json_to_anthropic_message(converted, ModelConfig(
+        name="Qwen",
+        model_id="qwen-instruct",
+        base_url="https://example.invalid/v1/start",
+        api_key="key",
+        upstream_model="qwen-instruct",
+        api_format="chat_completions",
+    ))
+    assert_true(anthropic_message["content"][0]["text"] == "vision ok", "Chat JSON should convert to Anthropic non-stream message text")
+
+
+def exercise_structured_content_passthrough() -> None:
+    responses_payload = responses_request_to_chat_completions({
+        "model": "multimodal-model",
+        "tool_choice": {"type": "function", "name": "get_weather"},
+        "input": [{
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "summarize attached content"},
+                {"type": "input_file", "file_url": "https://example.invalid/a.pdf", "filename": "a.pdf"},
+                {"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}},
+            ],
+        }],
+    }, "multimodal-model")
+    chat_content = responses_payload["messages"][0]["content"]
+    assert_true(responses_payload["tool_choice"] == {"type": "function", "function": {"name": "get_weather"}}, "Responses function tool_choice should convert to Chat Completions format")
+    assert_true(isinstance(chat_content, list), "Structured Responses content should stay as multimodal chat content")
+    assert_true(chat_content[1] == {"type": "file", "file": {"file_url": "https://example.invalid/a.pdf", "filename": "a.pdf"}}, "Responses input_file should pass through to chat file content")
+    assert_true(chat_content[2] == {"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}}, "Responses input_audio should pass through to chat content")
+
+    anthropic_responses = anthropic_messages_to_responses({
+        "model": "multimodal-model",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "summarize document"},
+                {"type": "document", "source": {"type": "url", "url": "https://example.invalid/a.pdf"}},
+            ],
+        }],
+    }, "multimodal-model")
+    response_content = anthropic_responses["input"][0]["content"]
+    assert_true(isinstance(response_content, list), "Anthropic document should stay as structured Responses content")
+    assert_true(response_content[1] == {"type": "input_file", "file_url": "https://example.invalid/a.pdf"}, "Anthropic document URL should map to Responses input_file")
+
+
 def main() -> int:
     tmpdir = Path.cwd() / ".smoke_tmp"
     if tmpdir.exists():
@@ -1091,6 +1208,7 @@ def main() -> int:
         exercise_pyqt_model_management_regressions()
         exercise_count_tokens_estimate()
         exercise_codex_responses_passthrough()
+        exercise_default_stream_config()
         exercise_codex_config_writer(tmpdir)
         exercise_backup_restore(tmpdir)
         exercise_headless_cli_model_config(tmpdir)
@@ -1103,6 +1221,8 @@ def main() -> int:
         exercise_tool_argument_repair_and_thinking_filter()
         exercise_id_uniqueness_and_non_stream_json()
         exercise_cross_platform_tool_matrix()
+        exercise_multimodal_chat_passthrough()
+        exercise_structured_content_passthrough()
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 

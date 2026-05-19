@@ -70,6 +70,12 @@ def strip_tags(value: str) -> str:
     return re.sub(r"<[^>]+>", "", value).strip()
 
 
+def request_stream_enabled(body: Dict[str, Any], default_stream: bool = True) -> bool:
+    if "stream" in body:
+        return bool(body.get("stream"))
+    return bool(default_stream)
+
+
 def parse_pseudo_attributes(value: str) -> Dict[str, str]:
     return {name: raw.strip() for name, _, raw in PSEUDO_ATTR_RE.findall(value)}
 
@@ -326,8 +332,10 @@ def write_data_sse(handler: BaseHTTPRequestHandler, data: str) -> None:
 
 def normalize_content_part(part: Dict[str, Any]) -> Any:
     part_type = part.get("type")
-    if part_type == "text":
+    if part_type in ("text", "input_text"):
         return {"type": "input_text", "text": part.get("text", "")}
+    if part_type in ("input_image", "input_file"):
+        return dict(part)
     if part_type == "image":
         source = part.get("source") or {}
         if source.get("type") == "base64":
@@ -336,7 +344,140 @@ def normalize_content_part(part: Dict[str, Any]) -> Any:
             return {"type": "input_image", "image_url": f"data:{media_type};base64,{data}"}
         if source.get("type") == "url":
             return {"type": "input_image", "image_url": source.get("url", "")}
+    if part_type == "document":
+        source = part.get("source") if isinstance(part.get("source"), dict) else {}
+        if source.get("type") == "url":
+            return {"type": "input_file", "file_url": source.get("url", "")}
+        if source.get("type") == "base64":
+            file_data = f"data:{source.get('media_type', 'application/octet-stream')};base64,{source.get('data', '')}"
+            return {"type": "input_file", "filename": part.get("title") or source.get("filename") or "document", "file_data": file_data}
+    if part_type in ("image_url", "file", "input_audio"):
+        return dict(part)
     return {"type": "input_text", "text": json.dumps(part, ensure_ascii=False)}
+
+
+def image_url_from_part(part: Dict[str, Any]) -> Optional[str]:
+    part_type = part.get("type")
+    if part_type == "image_url":
+        image_url = part.get("image_url")
+        if isinstance(image_url, dict):
+            return str(image_url.get("url") or "")
+        if isinstance(image_url, str):
+            return image_url
+    if part_type == "input_image":
+        image_url = part.get("image_url") or part.get("url")
+        if isinstance(image_url, str):
+            return image_url
+    if part_type == "image":
+        source = part.get("source") or {}
+        if source.get("type") == "base64":
+            media_type = source.get("media_type", "image/png")
+            data = source.get("data", "")
+            return f"data:{media_type};base64,{data}"
+        if source.get("type") == "url":
+            return str(source.get("url") or "")
+    return None
+
+
+def file_chat_part_from_part(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    part_type = part.get("type")
+    if part_type == "input_file":
+        file_part = {"type": "file", "file": {}}
+        file_value = file_part["file"]
+        for source_key, target_key in (("file_id", "file_id"), ("file_url", "file_url"), ("file_data", "file_data"), ("filename", "filename")):
+            if part.get(source_key):
+                file_value[target_key] = part[source_key]
+        return file_part if file_value else None
+    if part_type == "file" and isinstance(part.get("file"), dict):
+        return {"type": "file", "file": dict(part["file"])}
+    return None
+
+
+def audio_chat_part_from_part(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    part_type = part.get("type")
+    if part_type == "input_audio":
+        input_audio = part.get("input_audio") if isinstance(part.get("input_audio"), dict) else {}
+        if input_audio:
+            return {"type": "input_audio", "input_audio": dict(input_audio)}
+    return None
+
+
+def content_part_to_chat_part(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    part_type = part.get("type")
+    if part_type in ("text", "input_text", "output_text"):
+        return {"type": "text", "text": part.get("text", "")}
+    if part_type == "document":
+        normalized = normalize_content_part(part)
+        return file_chat_part_from_part(normalized) if isinstance(normalized, dict) else None
+    image_url = image_url_from_part(part)
+    if image_url:
+        return {"type": "image_url", "image_url": {"url": image_url}}
+    file_part = file_chat_part_from_part(part)
+    if file_part:
+        return file_part
+    audio_part = audio_chat_part_from_part(part)
+    if audio_part:
+        return audio_part
+    return None
+
+
+def content_to_chat_content(content: Any) -> Any:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return "" if content is None else str(content)
+    parts: List[Dict[str, Any]] = []
+    text_parts: List[str] = []
+    for part in content:
+        if isinstance(part, str):
+            parts.append({"type": "text", "text": part})
+            text_parts.append(part)
+            continue
+        if not isinstance(part, dict):
+            text = str(part)
+            parts.append({"type": "text", "text": text})
+            text_parts.append(text)
+            continue
+        chat_part = content_part_to_chat_part(part)
+        if chat_part:
+            parts.append(chat_part)
+            if chat_part.get("type") == "text":
+                text_parts.append(str(chat_part.get("text") or ""))
+        else:
+            text = json.dumps(part, ensure_ascii=False)
+            parts.append({"type": "text", "text": text})
+            text_parts.append(text)
+    if any(part.get("type") == "image_url" for part in parts):
+        return parts
+    if any(part.get("type") in ("file", "input_audio") for part in parts):
+        return parts
+    return "\n".join(text for text in text_parts if text)
+
+
+def content_to_responses_content(content: Any) -> Any:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return "" if content is None else str(content)
+    parts: List[Dict[str, Any]] = []
+    text_parts: List[str] = []
+    for part in content:
+        if isinstance(part, str):
+            parts.append({"type": "input_text", "text": part})
+            text_parts.append(part)
+            continue
+        if not isinstance(part, dict):
+            text = str(part)
+            parts.append({"type": "input_text", "text": text})
+            text_parts.append(text)
+            continue
+        normalized = normalize_content_part(part)
+        if normalized.get("type") == "input_text":
+            text_parts.append(str(normalized.get("text") or ""))
+        parts.append(normalized)
+    if any(part.get("type") != "input_text" for part in parts):
+        return parts
+    return "\n".join(text for text in text_parts if text)
 
 
 def anthropic_content_to_text(content: Any) -> str:
@@ -606,6 +747,10 @@ def split_anthropic_content(content: Any) -> Tuple[str, List[Dict[str, Any]], Li
     return "\n".join(part for part in text_parts if part), tool_uses, tool_results
 
 
+def anthropic_message_to_chat_content(content: Any) -> Any:
+    return content_to_chat_content(content)
+
+
 def anthropic_message_to_chat_messages(message: Dict[str, Any]) -> List[Dict[str, Any]]:
     role = message.get("role", "user")
     if role not in ("user", "assistant", "system"):
@@ -637,6 +782,9 @@ def anthropic_message_to_chat_messages(message: Dict[str, Any]) -> List[Dict[str
                 },
             })
         return [{"role": "assistant", "content": text or None, "tool_calls": tool_calls}]
+    chat_content = anthropic_message_to_chat_content(message.get("content", ""))
+    if isinstance(chat_content, list):
+        return [{"role": role, "content": chat_content}]
     return [{"role": role, "content": text}]
 
 
@@ -644,7 +792,9 @@ def anthropic_message_to_responses_items(message: Dict[str, Any]) -> List[Dict[s
     role = message.get("role", "user")
     if role not in ("user", "assistant", "system"):
         role = "user"
-    text, tool_uses, tool_results = split_anthropic_content(message.get("content", ""))
+    content_value = message.get("content", "")
+    text, tool_uses, tool_results = split_anthropic_content(content_value)
+    responses_content = content_to_responses_content(content_value)
     items: List[Dict[str, Any]] = []
     if tool_results:
         for result in tool_results:
@@ -656,8 +806,11 @@ def anthropic_message_to_responses_items(message: Dict[str, Any]) -> List[Dict[s
         if text:
             items.append({"role": role, "content": text})
     else:
-        if text:
-            items.append({"role": role, "content": text})
+        if tool_uses:
+            if text:
+                items.append({"role": role, "content": text})
+        elif responses_content:
+            items.append({"role": role, "content": responses_content})
         for tool_use in tool_uses:
             items.append({
                 "type": "function_call",
@@ -670,7 +823,7 @@ def anthropic_message_to_responses_items(message: Dict[str, Any]) -> List[Dict[s
     return items
 
 
-def anthropic_messages_to_responses(body: Dict[str, Any], fallback_model: str, upstream_model: Optional[str] = None) -> Dict[str, Any]:
+def anthropic_messages_to_responses(body: Dict[str, Any], fallback_model: str, upstream_model: Optional[str] = None, default_stream: bool = True) -> Dict[str, Any]:
     input_items: List[Dict[str, Any]] = []
     system_texts: List[str] = []
 
@@ -692,7 +845,7 @@ def anthropic_messages_to_responses(body: Dict[str, Any], fallback_model: str, u
     payload: Dict[str, Any] = {
         "model": upstream_model or os.getenv("UPSTREAM_MODEL") or body.get("model") or fallback_model,
         "input": input_items,
-        "stream": bool(body.get("stream", True)),
+        "stream": request_stream_enabled(body, default_stream),
     }
 
     if system_texts:
@@ -715,7 +868,7 @@ def anthropic_messages_to_responses(body: Dict[str, Any], fallback_model: str, u
     return payload
 
 
-def anthropic_messages_to_chat_completions(body: Dict[str, Any], fallback_model: str, upstream_model: Optional[str] = None) -> Dict[str, Any]:
+def anthropic_messages_to_chat_completions(body: Dict[str, Any], fallback_model: str, upstream_model: Optional[str] = None, default_stream: bool = True) -> Dict[str, Any]:
     messages: List[Dict[str, Any]] = []
 
     system = body.get("system")
@@ -734,7 +887,7 @@ def anthropic_messages_to_chat_completions(body: Dict[str, Any], fallback_model:
     payload: Dict[str, Any] = {
         "model": upstream_model or os.getenv("UPSTREAM_MODEL") or body.get("model") or fallback_model,
         "messages": messages,
-        "stream": bool(body.get("stream", True)),
+        "stream": request_stream_enabled(body, default_stream),
     }
     if isinstance(body.get("max_tokens"), int):
         payload["max_tokens"] = body["max_tokens"]
@@ -752,16 +905,16 @@ def anthropic_messages_to_chat_completions(body: Dict[str, Any], fallback_model:
     return payload
 
 
-def anthropic_messages_to_upstream(body: Dict[str, Any], model_config: ModelConfig, fallback_model: str, upstream_model: Optional[str]) -> Dict[str, Any]:
+def anthropic_messages_to_upstream(body: Dict[str, Any], model_config: ModelConfig, fallback_model: str, upstream_model: Optional[str], default_stream: bool = True) -> Dict[str, Any]:
     if model_config.api_format == "chat_completions":
-        return anthropic_messages_to_chat_completions(body, fallback_model, upstream_model)
-    return anthropic_messages_to_responses(body, fallback_model, upstream_model)
+        return anthropic_messages_to_chat_completions(body, fallback_model, upstream_model, default_stream)
+    return anthropic_messages_to_responses(body, fallback_model, upstream_model, default_stream)
 
 
-def responses_request_to_upstream(body: Dict[str, Any], fallback_model: str, upstream_model: Optional[str] = None) -> Dict[str, Any]:
+def responses_request_to_upstream(body: Dict[str, Any], fallback_model: str, upstream_model: Optional[str] = None, default_stream: bool = True) -> Dict[str, Any]:
     payload: Dict[str, Any] = dict(body)
     payload["model"] = upstream_model or os.getenv("UPSTREAM_MODEL") or body.get("model") or fallback_model
-    payload["stream"] = bool(body.get("stream", True))
+    payload["stream"] = request_stream_enabled(body, default_stream)
     return payload
 
 
@@ -786,6 +939,10 @@ def responses_content_to_text(content: Any) -> str:
     return "\n".join(text for text in texts if text)
 
 
+def responses_content_to_chat_content(content: Any) -> Any:
+    return content_to_chat_content(content)
+
+
 def responses_tool_to_chat_tool(tool: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if tool.get("type") != "function":
         return None
@@ -800,7 +957,15 @@ def responses_tool_to_chat_tool(tool: Dict[str, Any]) -> Optional[Dict[str, Any]
     return {"type": "function", "function": function}
 
 
-def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: str, upstream_model: Optional[str] = None) -> Dict[str, Any]:
+def responses_tool_choice_to_chat(tool_choice: Any) -> Any:
+    if not isinstance(tool_choice, dict):
+        return tool_choice
+    if tool_choice.get("type") == "function" and tool_choice.get("name"):
+        return {"type": "function", "function": {"name": tool_choice["name"]}}
+    return tool_choice
+
+
+def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: str, upstream_model: Optional[str] = None, default_stream: bool = True) -> Dict[str, Any]:
     messages: List[Dict[str, Any]] = []
     instructions = body.get("instructions")
     if isinstance(instructions, str) and instructions.strip():
@@ -839,14 +1004,14 @@ def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: 
                     messages.append({"role": "user", "content": visible_text})
                 continue
             role = item.get("role") or ("assistant" if item_type == "message" else "user")
-            messages.append({"role": role, "content": responses_content_to_text(item.get("content"))})
+            messages.append({"role": role, "content": responses_content_to_chat_content(item.get("content"))})
     else:
         messages.append({"role": "user", "content": ""})
 
     payload: Dict[str, Any] = {
         "model": upstream_model or os.getenv("UPSTREAM_MODEL") or body.get("model") or fallback_model,
         "messages": messages,
-        "stream": bool(body.get("stream", True)),
+        "stream": request_stream_enabled(body, default_stream),
     }
     if isinstance(body.get("max_output_tokens"), int):
         payload["max_tokens"] = body["max_output_tokens"]
@@ -858,14 +1023,14 @@ def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: 
     if tools:
         payload["tools"] = tools
     if body.get("tool_choice") is not None:
-        payload["tool_choice"] = body["tool_choice"]
+        payload["tool_choice"] = responses_tool_choice_to_chat(body["tool_choice"])
     return payload
 
 
-def responses_request_to_model_upstream(body: Dict[str, Any], model_config: ModelConfig, fallback_model: str, upstream_model: Optional[str]) -> Dict[str, Any]:
+def responses_request_to_model_upstream(body: Dict[str, Any], model_config: ModelConfig, fallback_model: str, upstream_model: Optional[str], default_stream: bool = True) -> Dict[str, Any]:
     if model_config.api_format == "chat_completions":
-        return responses_request_to_chat_completions(body, fallback_model, upstream_model)
-    return responses_request_to_upstream(body, fallback_model, upstream_model)
+        return responses_request_to_chat_completions(body, fallback_model, upstream_model, default_stream)
+    return responses_request_to_upstream(body, fallback_model, upstream_model, default_stream)
 
 
 def normalize_upstream_url(upstream_url: str, api_format: str) -> str:
@@ -1417,8 +1582,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         try:
             body = read_json_body(self)
-            stream = bool(body.get("stream", True))
             config = current_config()
+            stream = request_stream_enabled(body, config.default_stream)
             model_config = config.find_model(body.get("model"))
             upstream_url = os.getenv("UPSTREAM_RESPONSES_URL") or model_config.base_url
             fallback_model = os.getenv("UPSTREAM_MODEL") or model_config.model_id
@@ -1429,7 +1594,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 send_json(self, 500, {"type": "error", "error": {"type": "authentication_error", "message": f"No API key configured for model {model_config.model_id}"}})
                 return
 
-            upstream_payload = anthropic_messages_to_upstream(body, model_config, fallback_model, upstream_model)
+            upstream_payload = anthropic_messages_to_upstream(body, model_config, fallback_model, upstream_model, config.default_stream)
             log(
                 "request "
                 f"model={body.get('model')} route={model_config.model_id} "
@@ -1453,8 +1618,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def handle_responses_post(self) -> None:
         try:
             body = read_json_body(self)
-            stream = bool(body.get("stream", True))
             config = current_config()
+            stream = request_stream_enabled(body, config.default_stream)
             model_config = config.find_model(body.get("model"))
             upstream_url = os.getenv("UPSTREAM_RESPONSES_URL") or model_config.base_url
             fallback_model = os.getenv("UPSTREAM_MODEL") or model_config.model_id
@@ -1464,7 +1629,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             if not auth_token:
                 send_json(self, 500, responses_error_payload(f"No API key configured for model {model_config.model_id}", "authentication_error"))
                 return
-            upstream_payload = responses_request_to_model_upstream(body, model_config, fallback_model, upstream_model)
+            upstream_payload = responses_request_to_model_upstream(body, model_config, fallback_model, upstream_model, config.default_stream)
             log(
                 "codex request "
                 f"model={body.get('model')} route={model_config.model_id} "
@@ -1572,7 +1737,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
             try:
                 with open_upstream(upstream_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
                     raw_payload = response.read().decode("utf-8", errors="replace")
-                payload = chat_completion_json_to_responses(json.loads(raw_payload), model_config.model_id, estimate_value_tokens(body.get("input")), body.get("tools"))
+                payload = chat_completion_json_to_responses(
+                    json.loads(raw_payload),
+                    model_config.model_id,
+                    estimate_value_tokens(body.get("input")),
+                    upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
+                )
                 send_json(self, 200, payload)
                 return
             except urllib.error.HTTPError as exc:
@@ -1585,7 +1755,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         try:
             with open_upstream(upstream_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
                 raw_payload = response.read().decode("utf-8", errors="replace")
-            send_json(self, 200, responses_json_to_anthropic_message(json.loads(raw_payload), model_config))
+            send_json(self, 200, json.loads(raw_payload))
             return
         except urllib.error.HTTPError as exc:
             message = upstream_error_message(exc)
@@ -1748,7 +1918,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 raw_payload = response.read().decode("utf-8", errors="replace")
             payload = json.loads(raw_payload)
             if isinstance(payload.get("output"), list):
-                send_json(self, 200, payload)
+                send_json(self, 200, responses_json_to_anthropic_message(payload, model_config))
+                return
+            if isinstance(payload.get("choices"), list):
+                converted = chat_completion_json_to_responses(
+                    payload,
+                    model_config.model_id,
+                    estimate_value_tokens(body.get("messages")),
+                    upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
+                )
+                send_json(self, 200, responses_json_to_anthropic_message(converted, model_config))
                 return
             raise ValueError("Responses JSON missing output list")
         except urllib.error.HTTPError as exc:
