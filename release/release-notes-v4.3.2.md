@@ -12,6 +12,8 @@ Fixes:
 7. Fixed a Codex Responses regression where the final modality sanitizer inspected ordinary tool JSON Schema `type` values and returned HTTP 500, causing repeated `Reconnecting...` failures.
 8. Historical unsupported image/audio/video parts are stripped before upstream calls, while the current text-only turn remains usable.
 9. Responses streams that only provide final text in `response.completed.output` are converted back into Anthropic text events for Claude Code compatibility.
+10. Image-disabled models no longer receive visual tools such as `view_image`, screenshot inspection, OCR, or vision tools; forced choices for removed tools fall back to `auto`.
+11. Historical visual tool calls and their image/data-URL tool results are removed for image-disabled models, preventing tool-triggered multimodal context from breaking later text turns.
 
 Validation:
 - `python -m json.tool headless-config.example.json`
@@ -23,6 +25,7 @@ Validation:
 - Real `codex exec` against the rebuilt Windows EXE for `glm-chat`, `deepseek-chat`, and `qwen-instruct`
 - Real `claude -p` against `/v1/messages` for `glm-chat`, `deepseek-chat`, and `qwen-instruct`
 - Direct `/v1/messages` and `/v1/responses` tests for blocked image input followed by a clean text-only turn
+- Local regression coverage for visual tool filtering, `view_image` history cleanup, and `data:image/...base64` tool-result cleanup while keeping visual tools available for image-capable routes
 
 Large assets:
 Windows EXE/ZIP, Linux binaries, headless CLI zip, python-launcher tar.xz, source package, README, and checksums are attached to the GitHub Release.

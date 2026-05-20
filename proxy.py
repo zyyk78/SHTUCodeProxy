@@ -567,22 +567,56 @@ MODALITY_PART_TYPES = {
 }
 MULTIMODAL_PART_TYPES = set().union(*MODALITY_PART_TYPES.values())
 UNSUPPORTED_MODALITY_PLACEHOLDER = "[已移除当前模型不支持的图片/音频/视频输入]"
+IMAGE_TOOL_NAME_RE = re.compile(r"(^|[_-])(view|read|analyze|describe|inspect|parse|recognize|ocr|vision)[_-]?(image|img|picture|photo|screenshot|screen|visual)|^(view_image|image|screenshot|ocr)$", re.IGNORECASE)
+IMAGE_TOOL_TEXT_RE = re.compile(r"\b(image|picture|photo|screenshot|screen capture|vision|visual|ocr|识图|图片|截图)\b", re.IGNORECASE)
+MEDIA_DATA_RE = re.compile(r"data:(image|audio|video)/[a-z0-9.+-]+;base64,", re.IGNORECASE)
 
 
 def content_modalities(content: Any) -> set[str]:
     found: set[str] = set()
-    parts = [content] if isinstance(content, dict) else content if isinstance(content, list) else []
-    if not isinstance(parts, list):
+    if isinstance(content, str):
+        return media_string_modalities(content)
+    if isinstance(content, list):
+        for part in content:
+            found.update(content_modalities(part))
         return found
-    for part in parts:
-        if not isinstance(part, dict):
-            continue
-        part_type = part.get("type")
-        if not isinstance(part_type, str):
-            continue
+    if not isinstance(content, dict):
+        return found
+    part_type = content.get("type")
+    if isinstance(part_type, str):
         for modality, part_types in MODALITY_PART_TYPES.items():
             if part_type in part_types:
                 found.add(modality)
+        if part_type in ("tool_use", "function_call"):
+            found.update(tool_modalities(content))
+    if part_type in ("tool_result", "message") or "role" in content:
+        found.update(content_modalities(content.get("content")))
+    if part_type in ("function_call_output", "tool_result"):
+        found.update(content_modalities(content.get("output")))
+    return found
+
+
+def direct_content_modalities(content: Any) -> set[str]:
+    if not isinstance(content, dict):
+        return set()
+    part_type = content.get("type")
+    if not isinstance(part_type, str):
+        return set()
+    if part_type in ("tool_use", "function_call"):
+        return tool_modalities(content)
+    found: set[str] = set()
+    for modality, part_types in MODALITY_PART_TYPES.items():
+        if part_type in part_types:
+            found.add(modality)
+    return found
+
+
+def media_string_modalities(value: Any) -> set[str]:
+    if not isinstance(value, str):
+        return set()
+    found: set[str] = set()
+    for match in MEDIA_DATA_RE.finditer(value[:2048]):
+        found.add(match.group(1).lower())
     return found
 
 
@@ -601,30 +635,89 @@ def unsupported_modalities(model_config: ModelConfig, modalities: set[str]) -> s
     return unsupported
 
 
+def tool_modalities(tool: Dict[str, Any]) -> set[str]:
+    name = str(tool.get("name") or "")
+    description = str(tool.get("description") or "")
+    parameters = tool.get("input_schema") or tool.get("parameters") or {}
+    text = f"{name}\n{description}\n{json.dumps(parameters, ensure_ascii=False) if isinstance(parameters, dict) else parameters}"
+    modalities: set[str] = set()
+    if IMAGE_TOOL_NAME_RE.search(name) or IMAGE_TOOL_TEXT_RE.search(text):
+        modalities.add("image")
+    return modalities
+
+
+def filter_tools_for_model(tools: Any, model_config: ModelConfig) -> List[Dict[str, Any]]:
+    if not isinstance(tools, list):
+        return []
+    filtered: List[Dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        if unsupported_modalities(model_config, tool_modalities(tool)):
+            continue
+        filtered.append(tool)
+    return filtered
+
+
+def sanitized_tool_choice_for_model(tool_choice: Any, tools: Any, model_config: ModelConfig) -> Any:
+    if not isinstance(tool_choice, dict) or tool_choice.get("type") != "tool" or not tool_choice.get("name"):
+        return tool_choice
+    allowed_names = {str(tool.get("name")) for tool in filter_tools_for_model(tools, model_config) if isinstance(tool, dict)}
+    return {"type": "auto"} if tool_choice.get("name") not in allowed_names else tool_choice
+
+
 def sanitized_content_for_model(content: Any, model_config: ModelConfig) -> Any:
+    if isinstance(content, str) and unsupported_modalities(model_config, media_string_modalities(content)):
+        return UNSUPPORTED_MODALITY_PLACEHOLDER
     if isinstance(content, list):
         sanitized: List[Any] = []
         removed = False
         for part in content:
-            if isinstance(part, dict) and unsupported_modalities(model_config, content_modalities(part)):
+            if isinstance(part, dict) and unsupported_modalities(model_config, direct_content_modalities(part)):
                 removed = True
                 continue
-            sanitized.append(part)
+            sanitized_part = sanitized_content_for_model(part, model_config) if isinstance(part, dict) else part
+            if sanitized_part in ("", [], None):
+                removed = True
+                continue
+            sanitized.append(sanitized_part)
         if removed and not sanitized:
             return UNSUPPORTED_MODALITY_PLACEHOLDER
         return sanitized
-    if isinstance(content, dict) and unsupported_modalities(model_config, content_modalities(content)):
-        return ""
+    if isinstance(content, dict):
+        if unsupported_modalities(model_config, direct_content_modalities(content)):
+            return ""
+        sanitized = dict(content)
+        if "content" in sanitized:
+            sanitized["content"] = sanitized_content_for_model(sanitized.get("content"), model_config)
+        if sanitized.get("type") in ("function_call_output", "tool_result") and "output" in sanitized:
+            sanitized["output"] = sanitized_content_for_model(sanitized.get("output"), model_config)
+        return sanitized
     return content
 
 
 def sanitized_anthropic_body_for_model(body: Dict[str, Any], model_config: ModelConfig) -> Dict[str, Any]:
     sanitized = dict(body)
+    sanitized["tools"] = filter_tools_for_model(body.get("tools"), model_config)
+    sanitized["tool_choice"] = sanitized_tool_choice_for_model(body.get("tool_choice"), body.get("tools"), model_config)
+    removed_tool_ids: set[str] = set()
+    for message in body.get("messages", []):
+        if not isinstance(message, dict) or not isinstance(message.get("content"), list):
+            continue
+        for part in message["content"]:
+            if isinstance(part, dict) and part.get("type") == "tool_use" and unsupported_modalities(model_config, tool_modalities(part)):
+                removed_tool_ids.add(str(part.get("id") or ""))
     messages: List[Any] = []
     for message in body.get("messages", []):
-        if isinstance(message, dict) and unsupported_modalities(model_config, content_modalities(message.get("content"))):
+        if isinstance(message, dict):
             sanitized_message = dict(message)
-            sanitized_message["content"] = sanitized_content_for_model(message.get("content"), model_config)
+            content = sanitized_content_for_model(message.get("content"), model_config)
+            if isinstance(content, list) and removed_tool_ids:
+                content = [
+                    part for part in content
+                    if not (isinstance(part, dict) and part.get("type") == "tool_result" and str(part.get("tool_use_id") or "") in removed_tool_ids)
+                ]
+            sanitized_message["content"] = content if content not in ([], None) else UNSUPPORTED_MODALITY_PLACEHOLDER
             messages.append(sanitized_message)
         else:
             messages.append(message)
@@ -634,23 +727,34 @@ def sanitized_anthropic_body_for_model(body: Dict[str, Any], model_config: Model
 
 def sanitized_responses_body_for_model(body: Dict[str, Any], model_config: ModelConfig) -> Dict[str, Any]:
     sanitized = dict(body)
+    sanitized["tools"] = filter_tools_for_model(body.get("tools"), model_config)
+    sanitized["tool_choice"] = sanitized_tool_choice_for_model(body.get("tool_choice"), body.get("tools"), model_config)
     input_items = body.get("input")
+    removed_call_ids: set[str] = set()
+    if isinstance(input_items, list):
+        for item in input_items:
+            if isinstance(item, dict) and item.get("type") == "function_call" and unsupported_modalities(model_config, tool_modalities(item)):
+                removed_call_ids.add(str(item.get("call_id") or item.get("id") or ""))
     if isinstance(input_items, dict):
         sanitized_item = dict(input_items)
-        if unsupported_modalities(model_config, content_modalities(sanitized_item)):
-            sanitized_item = {"role": sanitized_item.get("role", "user"), "content": sanitized_content_for_model(sanitized_item.get("content", ""), model_config)}
-        else:
+        if "content" in sanitized_item:
             sanitized_item["content"] = sanitized_content_for_model(sanitized_item.get("content"), model_config)
+        if sanitized_item.get("type") in ("function_call_output", "tool_result") and "output" in sanitized_item:
+            sanitized_item["output"] = sanitized_content_for_model(sanitized_item.get("output"), model_config)
         sanitized["input"] = sanitized_item
     elif isinstance(input_items, list):
         sanitized_items: List[Any] = []
         for item in input_items:
             if isinstance(item, dict):
                 sanitized_item = dict(item)
-                if unsupported_modalities(model_config, content_modalities(sanitized_item)):
-                    sanitized_item = {"role": sanitized_item.get("role", "user"), "content": sanitized_content_for_model(sanitized_item.get("content", ""), model_config)}
-                else:
+                if unsupported_modalities(model_config, direct_content_modalities(sanitized_item)):
+                    continue
+                if sanitized_item.get("type") in ("function_call_output", "tool_result") and str(sanitized_item.get("call_id") or sanitized_item.get("id") or "") in removed_call_ids:
+                    continue
+                if "content" in sanitized_item:
                     sanitized_item["content"] = sanitized_content_for_model(sanitized_item.get("content"), model_config)
+                if sanitized_item.get("type") in ("function_call_output", "tool_result") and "output" in sanitized_item:
+                    sanitized_item["output"] = sanitized_content_for_model(sanitized_item.get("output"), model_config)
                 sanitized_items.append(sanitized_item)
             else:
                 sanitized_items.append(item)
@@ -659,11 +763,13 @@ def sanitized_responses_body_for_model(body: Dict[str, Any], model_config: Model
 
 
 def sanitized_upstream_value_for_model(value: Any, model_config: ModelConfig) -> Any:
+    if isinstance(value, str) and unsupported_modalities(model_config, media_string_modalities(value)):
+        return UNSUPPORTED_MODALITY_PLACEHOLDER
     if isinstance(value, list):
         sanitized_items: List[Any] = []
         removed = False
         for item in value:
-            if isinstance(item, dict) and unsupported_modalities(model_config, content_modalities(item)):
+            if isinstance(item, dict) and unsupported_modalities(model_config, direct_content_modalities(item)):
                 removed = True
                 continue
             sanitized_items.append(sanitized_upstream_value_for_model(item, model_config))
@@ -671,16 +777,20 @@ def sanitized_upstream_value_for_model(value: Any, model_config: ModelConfig) ->
             return [{"type": "text", "text": UNSUPPORTED_MODALITY_PLACEHOLDER}]
         return sanitized_items
     if isinstance(value, dict):
-        if unsupported_modalities(model_config, content_modalities(value)):
+        if unsupported_modalities(model_config, direct_content_modalities(value)):
             return ""
         sanitized_dict = dict(value)
         if "content" in sanitized_dict:
             sanitized_dict["content"] = sanitized_upstream_value_for_model(sanitized_dict["content"], model_config)
+        if sanitized_dict.get("type") in ("function_call_output", "tool_result") and "output" in sanitized_dict:
+            sanitized_dict["output"] = sanitized_upstream_value_for_model(sanitized_dict["output"], model_config)
         for key in ("input", "messages"):
             if key in sanitized_dict:
                 sanitized_dict[key] = sanitized_upstream_value_for_model(sanitized_dict[key], model_config)
         if sanitized_dict.get("content") == []:
             sanitized_dict["content"] = UNSUPPORTED_MODALITY_PLACEHOLDER
+        if sanitized_dict.get("output") == []:
+            sanitized_dict["output"] = UNSUPPORTED_MODALITY_PLACEHOLDER
         return sanitized_dict
     return value
 
