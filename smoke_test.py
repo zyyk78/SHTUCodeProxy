@@ -40,6 +40,7 @@ from proxy import (
     unsupported_modalities_message,
     sanitized_anthropic_body_for_model,
     sanitized_responses_body_for_model,
+    sanitized_upstream_payload_for_model,
 )
 
 
@@ -1229,6 +1230,22 @@ def exercise_multimodal_capability_config() -> None:
     assert_true(not any(isinstance(part, dict) and part.get("type") == "input_image" for part in sanitized_responses["input"][0]["content"]), "Historical Responses image should be stripped before forwarding to text-only model")
     qwen_sanitized_responses = sanitized_responses_body_for_model(responses_body, qwen_model)
     assert_true(any(isinstance(part, dict) and part.get("type") == "input_image" for part in qwen_sanitized_responses["input"][0]["content"]), "Image-capable Responses model should keep image input even if audio/video are disabled")
+
+    stale_chat_payload = {
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "old image"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            ],
+        }]
+    }
+    cleaned_chat_payload = sanitized_upstream_payload_for_model(stale_chat_payload, glm_model)
+    assert_true("image_url" not in json.dumps(cleaned_chat_payload), "Final Chat payload sanitizer should remove stale image_url parts for image-disabled models")
+
+    stale_responses_payload = {"input": [{"role": "user", "content": [{"type": "input_text", "text": "old image"}, {"type": "input_image", "image_url": "data:image/png;base64,AAAA"}]}]}
+    cleaned_responses_payload = sanitized_upstream_payload_for_model(stale_responses_payload, glm_model)
+    assert_true("input_image" not in json.dumps(cleaned_responses_payload), "Final Responses payload sanitizer should remove stale input_image parts for image-disabled models")
 
 
 def main() -> int:

@@ -651,6 +651,25 @@ def sanitized_responses_body_for_model(body: Dict[str, Any], model_config: Model
     return sanitized
 
 
+def sanitized_upstream_value_for_model(value: Any, model_config: ModelConfig) -> Any:
+    if isinstance(value, list):
+        sanitized_items: List[Any] = []
+        for item in value:
+            if isinstance(item, dict) and unsupported_modalities(model_config, content_modalities(item)):
+                continue
+            sanitized_items.append(sanitized_upstream_value_for_model(item, model_config))
+        return sanitized_items
+    if isinstance(value, dict):
+        if unsupported_modalities(model_config, content_modalities(value)):
+            return ""
+        return {key: sanitized_upstream_value_for_model(item, model_config) for key, item in value.items()}
+    return value
+
+
+def sanitized_upstream_payload_for_model(payload: Dict[str, Any], model_config: ModelConfig) -> Dict[str, Any]:
+    return sanitized_upstream_value_for_model(payload, model_config) if isinstance(payload, dict) else payload
+
+
 def anthropic_current_user_modalities(body: Dict[str, Any]) -> set[str]:
     messages = body.get("messages", [])
     if not isinstance(messages, list):
@@ -1782,6 +1801,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 return
 
             upstream_payload = anthropic_messages_to_upstream(body_for_upstream, model_config, fallback_model, upstream_model, config.default_stream)
+            upstream_payload = sanitized_upstream_payload_for_model(upstream_payload, model_config)
             log(
                 "request "
                 f"model={body.get('model')} route={model_config.model_id} "
@@ -1828,6 +1848,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 send_json(self, 500, responses_error_payload(f"No API key configured for model {model_config.model_id}", "authentication_error"))
                 return
             upstream_payload = responses_request_to_model_upstream(body_for_upstream, model_config, fallback_model, upstream_model, config.default_stream)
+            upstream_payload = sanitized_upstream_payload_for_model(upstream_payload, model_config)
             log(
                 "codex request "
                 f"model={body.get('model')} route={model_config.model_id} "
