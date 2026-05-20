@@ -139,6 +139,12 @@ def exercise_tool_call_translation() -> None:
     assert_true(parse_tool_arguments(tool_calls[0]["arguments"])["path"] == "README.md", "tool arguments parse mismatch")
     assert_true(stop_reason_from_done({"finish_reason": "tool_calls"}, tool_calls) == "tool_use", "tool stop reason mismatch")
 
+    kind, parsed = extract_text_delta("response.completed", json.dumps({
+        "type": "response.completed",
+        "response": responses_completed_payload("resp_done", "smoke-model", [{"id": "msg_done", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "OK"}]}], 1, "OK"),
+    }))
+    assert_true(kind == "delta" and parsed is not None and parsed.get("text") == "OK" and isinstance(parsed.get("completed"), dict), "Responses completion-only text should be emitted as a final delta")
+
     shell_item = codex_function_call_item({"name": "shell_exec", "arguments": '{"command":"Write-Output ok"}'})
     shell_args = json.loads(shell_item["arguments"])
     assert_true(shell_item["name"] == "shell", "Codex shell aliases should normalize to shell")
@@ -1252,6 +1258,13 @@ def exercise_multimodal_capability_config() -> None:
     image_only_responses = {"input": [{"role": "user", "content": [{"type": "input_image", "image_url": "data:image/png;base64,AAAA"}]}]}
     cleaned_image_only_responses = sanitized_upstream_payload_for_model(image_only_responses, glm_model)
     assert_true(cleaned_image_only_responses["input"][0]["content"], "Final sanitizer should not leave empty Responses content after removing unsupported image")
+
+    codex_payload_with_tools = {
+        "messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
+        "tools": [{"type": "function", "function": {"name": "shell", "parameters": {"type": "object", "properties": {"command": {"type": "array", "items": {"type": "string"}}}}}}],
+    }
+    cleaned_codex_payload = sanitized_upstream_payload_for_model(codex_payload_with_tools, glm_model)
+    assert_true(cleaned_codex_payload["tools"][0]["function"]["parameters"]["type"] == "object", "Final sanitizer should not inspect ordinary tool JSON schema type values")
 
 
 def main() -> int:

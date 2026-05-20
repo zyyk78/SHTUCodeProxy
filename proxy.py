@@ -578,6 +578,8 @@ def content_modalities(content: Any) -> set[str]:
         if not isinstance(part, dict):
             continue
         part_type = part.get("type")
+        if not isinstance(part_type, str):
+            continue
         for modality, part_types in MODALITY_PART_TYPES.items():
             if part_type in part_types:
                 found.add(modality)
@@ -671,7 +673,12 @@ def sanitized_upstream_value_for_model(value: Any, model_config: ModelConfig) ->
     if isinstance(value, dict):
         if unsupported_modalities(model_config, content_modalities(value)):
             return ""
-        sanitized_dict = {key: sanitized_upstream_value_for_model(item, model_config) for key, item in value.items()}
+        sanitized_dict = dict(value)
+        if "content" in sanitized_dict:
+            sanitized_dict["content"] = sanitized_upstream_value_for_model(sanitized_dict["content"], model_config)
+        for key in ("input", "messages"):
+            if key in sanitized_dict:
+                sanitized_dict[key] = sanitized_upstream_value_for_model(sanitized_dict[key], model_config)
         if sanitized_dict.get("content") == []:
             sanitized_dict["content"] = UNSUPPORTED_MODALITY_PLACEHOLDER
         return sanitized_dict
@@ -1316,6 +1323,9 @@ def extract_text_delta(event: Optional[str], data: str) -> Tuple[str, Optional[D
         response_obj = obj.get("response") if isinstance(obj.get("response"), dict) else obj
         output = response_obj.get("output") if isinstance(response_obj, dict) else None
         if isinstance(output, list):
+            output_text = responses_json_output_text(output)
+            if output_text:
+                return "delta", {"text": output_text, "completed": obj}
             tool_payloads: List[Dict[str, Any]] = []
             for output_index, item in enumerate(output):
                 if isinstance(item, dict) and item.get("type") == "function_call":
@@ -2180,6 +2190,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             "index": 0,
                             "delta": {"type": "text_delta", "text": text},
                         })
+                        if parsed and isinstance(parsed.get("completed"), dict):
+                            done_payload = parsed["completed"]
+                            break
                     elif kind in ("tool_call", "tool_call_delta", "tool_calls", "tool_calls_delta") and parsed:
                         merge_tool_call_payloads(tool_calls, parsed)
                     elif kind == "error":
