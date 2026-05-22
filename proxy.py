@@ -27,12 +27,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from platform_utils import app_dir
 from config_store import AppConfig, ModelConfig, load_config
 
 DEFAULT_UPSTREAM_URL = "https://genaiapi.shanghaitech.edu.cn/api/v1/response"
 DEFAULT_MODEL = "GPT-5.5"
 ANTHROPIC_VERSION = "2023-06-01"
 ACTIVE_CONFIG: Optional[AppConfig] = None
+LOG_FILE_MAX_BYTES = 5 * 1024 * 1024
 DSML_OPEN_RE = re.compile(r"<\s*[|｜]DSML[|｜](?:tool_calls|invoke|parameter)\b", re.IGNORECASE)
 DSML_CLOSE_RE = re.compile(r"</\s*[|｜]DSML[|｜](?:tool_calls|invoke|parameter)\s*>", re.IGNORECASE)
 DSML_TOOL_CALLS_CLOSE_RE = re.compile(r"</\s*[|｜]DSML[|｜]tool_calls\s*>", re.IGNORECASE)
@@ -63,7 +65,38 @@ def now_ms() -> int:
 
 
 def log(message: str) -> None:
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}", file=sys.stderr, flush=True)
+    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"
+    print(line, file=sys.stderr, flush=True)
+    try:
+        target_dir = app_dir()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / "proxy.log"
+        if target.exists() and target.stat().st_size > LOG_FILE_MAX_BYTES:
+            backup = target_dir / "proxy.log.1"
+            if backup.exists():
+                backup.unlink()
+            target.rename(backup)
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except Exception:
+        pass
+
+
+def usage_cache_debug(usage: Any) -> str:
+    if not isinstance(usage, dict):
+        return ""
+    candidates = {
+        "cache_creation_input_tokens": usage.get("cache_creation_input_tokens"),
+        "cache_read_input_tokens": usage.get("cache_read_input_tokens"),
+        "cached_tokens": usage.get("cached_tokens"),
+    }
+    input_details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details")
+    if isinstance(input_details, dict):
+        candidates["details_cached_tokens"] = input_details.get("cached_tokens")
+    present = {key: value for key, value in candidates.items() if value is not None}
+    if not present:
+        return ""
+    return " cache_usage=" + json.dumps(present, ensure_ascii=False, separators=(",", ":"))
 
 
 def strip_tags(value: str) -> str:
@@ -333,7 +366,7 @@ def write_data_sse(handler: BaseHTTPRequestHandler, data: str) -> None:
 def normalize_content_part(part: Dict[str, Any]) -> Any:
     part_type = part.get("type")
     if part_type in ("text", "input_text"):
-        return {"type": "input_text", "text": part.get("text", "")}
+        return copy_cache_metadata(part, {"type": "input_text", "text": part.get("text", "")})
     if part_type in ("input_image", "input_file"):
         return dict(part)
     if part_type == "image":
@@ -341,19 +374,19 @@ def normalize_content_part(part: Dict[str, Any]) -> Any:
         if source.get("type") == "base64":
             media_type = source.get("media_type", "image/png")
             data = source.get("data", "")
-            return {"type": "input_image", "image_url": f"data:{media_type};base64,{data}"}
+            return copy_cache_metadata(part, {"type": "input_image", "image_url": f"data:{media_type};base64,{data}"})
         if source.get("type") == "url":
-            return {"type": "input_image", "image_url": source.get("url", "")}
+            return copy_cache_metadata(part, {"type": "input_image", "image_url": source.get("url", "")})
     if part_type == "document":
         source = part.get("source") if isinstance(part.get("source"), dict) else {}
         if source.get("type") == "url":
-            return {"type": "input_file", "file_url": source.get("url", "")}
+            return copy_cache_metadata(part, {"type": "input_file", "file_url": source.get("url", "")})
         if source.get("type") == "base64":
             file_data = f"data:{source.get('media_type', 'application/octet-stream')};base64,{source.get('data', '')}"
-            return {"type": "input_file", "filename": part.get("title") or source.get("filename") or "document", "file_data": file_data}
+            return copy_cache_metadata(part, {"type": "input_file", "filename": part.get("title") or source.get("filename") or "document", "file_data": file_data})
     if part_type in ("image_url", "file", "input_audio"):
         return dict(part)
-    return {"type": "input_text", "text": json.dumps(part, ensure_ascii=False)}
+    return copy_cache_metadata(part, {"type": "input_text", "text": json.dumps(part, ensure_ascii=False)})
 
 
 def image_url_from_part(part: Dict[str, Any]) -> Optional[str]:
@@ -387,9 +420,9 @@ def file_chat_part_from_part(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         for source_key, target_key in (("file_id", "file_id"), ("file_url", "file_url"), ("file_data", "file_data"), ("filename", "filename")):
             if part.get(source_key):
                 file_value[target_key] = part[source_key]
-        return file_part if file_value else None
+        return copy_cache_metadata(part, file_part) if file_value else None
     if part_type == "file" and isinstance(part.get("file"), dict):
-        return {"type": "file", "file": dict(part["file"])}
+        return copy_cache_metadata(part, {"type": "file", "file": dict(part["file"])})
     return None
 
 
@@ -398,20 +431,20 @@ def audio_chat_part_from_part(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if part_type == "input_audio":
         input_audio = part.get("input_audio") if isinstance(part.get("input_audio"), dict) else {}
         if input_audio:
-            return {"type": "input_audio", "input_audio": dict(input_audio)}
+            return copy_cache_metadata(part, {"type": "input_audio", "input_audio": dict(input_audio)})
     return None
 
 
 def content_part_to_chat_part(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     part_type = part.get("type")
     if part_type in ("text", "input_text", "output_text"):
-        return {"type": "text", "text": part.get("text", "")}
+        return copy_cache_metadata(part, {"type": "text", "text": part.get("text", "")})
     if part_type == "document":
         normalized = normalize_content_part(part)
         return file_chat_part_from_part(normalized) if isinstance(normalized, dict) else None
     image_url = image_url_from_part(part)
     if image_url:
-        return {"type": "image_url", "image_url": {"url": image_url}}
+        return copy_cache_metadata(part, {"type": "image_url", "image_url": {"url": image_url}})
     file_part = file_chat_part_from_part(part)
     if file_part:
         return file_part
@@ -451,6 +484,8 @@ def content_to_chat_content(content: Any) -> Any:
         return parts
     if any(part.get("type") in ("file", "input_audio") for part in parts):
         return parts
+    if has_cache_metadata(parts):
+        return parts
     return "\n".join(text for text in text_parts if text)
 
 
@@ -476,6 +511,8 @@ def content_to_responses_content(content: Any) -> Any:
             text_parts.append(str(normalized.get("text") or ""))
         parts.append(normalized)
     if any(part.get("type") != "input_text" for part in parts):
+        return parts
+    if has_cache_metadata(parts):
         return parts
     return "\n".join(text for text in text_parts if text)
 
@@ -570,6 +607,116 @@ UNSUPPORTED_MODALITY_PLACEHOLDER = "[已移除当前模型不支持的图片/音
 IMAGE_TOOL_NAME_RE = re.compile(r"(^|[_-])(view|read|analyze|describe|inspect|parse|recognize|ocr|vision)[_-]?(image|img|picture|photo|screenshot|screen|visual)|^(view_image|image|screenshot|ocr)$", re.IGNORECASE)
 IMAGE_TOOL_TEXT_RE = re.compile(r"\b(image|picture|photo|screenshot|screen capture|vision|visual|ocr|识图|图片|截图)\b", re.IGNORECASE)
 MEDIA_DATA_RE = re.compile(r"data:(image|audio|video)/[a-z0-9.+-]+;base64,", re.IGNORECASE)
+CACHE_METADATA_KEYS = ("cache_control",)
+DEFAULT_CACHE_CONTROL = {"type": "ephemeral"}
+
+
+def copy_cache_metadata(source: Any, target: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(source, dict):
+        return target
+    for key in CACHE_METADATA_KEYS:
+        if key in source:
+            target[key] = source[key]
+    return target
+
+
+def has_cache_metadata(value: Any) -> bool:
+    if isinstance(value, dict):
+        return any(key in value for key in CACHE_METADATA_KEYS) or any(has_cache_metadata(item) for item in value.values())
+    if isinstance(value, list):
+        return any(has_cache_metadata(item) for item in value)
+    return False
+
+
+def auto_cache_enabled() -> bool:
+    return os.getenv("SHTU_AUTO_CACHE_CONTROL", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def set_default_cache_control(item: Any) -> bool:
+    if not isinstance(item, dict) or item.get("cache_control") is not None:
+        return False
+    item["cache_control"] = dict(DEFAULT_CACHE_CONTROL)
+    return True
+
+
+def mark_content_cache_boundary(content: Any, text_type: str) -> tuple[Any, bool]:
+    if isinstance(content, str):
+        if not content:
+            return content, False
+        return [{"type": text_type, "text": content, "cache_control": dict(DEFAULT_CACHE_CONTROL)}], True
+    if isinstance(content, list):
+        updated = [dict(part) if isinstance(part, dict) else part for part in content]
+        for part in reversed(updated):
+            if isinstance(part, dict) and part.get("type") in ("text", "input_text", "output_text"):
+                return updated, set_default_cache_control(part)
+        for part in reversed(updated):
+            if isinstance(part, dict):
+                return updated, set_default_cache_control(part)
+    return content, False
+
+
+def apply_auto_cache_control_to_tools(tools: Any) -> int:
+    if not isinstance(tools, list):
+        return 0
+    count = 0
+    for tool in tools:
+        if set_default_cache_control(tool):
+            count += 1
+    return count
+
+
+def apply_auto_cache_control_to_chat_payload(payload: Dict[str, Any]) -> int:
+    count = apply_auto_cache_control_to_tools(payload.get("tools"))
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return count
+    stable_indexes = {index for index, message in enumerate(messages) if isinstance(message, dict) and message.get("role") == "system"}
+    if len(messages) > 1:
+        stable_indexes.add(len(messages) - 2)
+    for index in sorted(stable_indexes):
+        if index < 0 or index >= len(messages) or not isinstance(messages[index], dict):
+            continue
+        if messages[index].get("content") is None:
+            continue
+        content, changed = mark_content_cache_boundary(messages[index].get("content"), "text")
+        if changed:
+            messages[index]["content"] = content
+            count += 1
+    return count
+
+
+def apply_auto_cache_control_to_responses_payload(payload: Dict[str, Any]) -> int:
+    count = apply_auto_cache_control_to_tools(payload.get("tools"))
+    input_items = payload.get("input")
+    if isinstance(input_items, str):
+        payload["input"] = [{"role": "user", "content": [{"type": "input_text", "text": input_items, "cache_control": dict(DEFAULT_CACHE_CONTROL)}]}]
+        return count + 1
+    if not isinstance(input_items, list):
+        return count
+    stable_indexes = {index for index, item in enumerate(input_items) if isinstance(item, dict) and item.get("role") in ("developer", "system")}
+    if len(input_items) > 1:
+        stable_indexes.add(len(input_items) - 2)
+    for index in sorted(stable_indexes):
+        if index < 0 or index >= len(input_items) or not isinstance(input_items[index], dict):
+            continue
+        if "content" in input_items[index]:
+            content, changed = mark_content_cache_boundary(input_items[index].get("content"), "input_text")
+            if changed:
+                input_items[index]["content"] = content
+                count += 1
+        elif input_items[index].get("type") in ("function_call", "function_call_output", "tool_result") and set_default_cache_control(input_items[index]):
+            count += 1
+    return count
+
+
+def apply_auto_cache_control(payload: Dict[str, Any]) -> int:
+    if not auto_cache_enabled() or has_cache_metadata(payload):
+        return 0
+    if not isinstance(payload.get("messages"), list):
+        return 0
+    if isinstance(payload.get("messages"), list):
+        return apply_auto_cache_control_to_chat_payload(payload)
+    return 0
 
 
 def content_modalities(content: Any) -> set[str]:
@@ -941,7 +1088,7 @@ def anthropic_tools_to_chat_tools(tools: Any) -> List[Dict[str, Any]]:
             "description": tool.get("description", ""),
             "parameters": tool.get("input_schema") or {"type": "object", "properties": {}},
         }
-        converted.append({"type": "function", "function": function})
+        converted.append(copy_cache_metadata(tool, {"type": "function", "function": function}))
     return converted
 
 
@@ -952,12 +1099,12 @@ def anthropic_tools_to_responses_tools(tools: Any) -> List[Dict[str, Any]]:
     for tool in tools:
         if not isinstance(tool, dict) or not tool.get("name"):
             continue
-        converted.append({
+        converted.append(copy_cache_metadata(tool, {
             "type": "function",
             "name": tool.get("name"),
             "description": tool.get("description", ""),
             "parameters": tool.get("input_schema") or {"type": "object", "properties": {}},
-        })
+        }))
     return converted
 
 
@@ -1097,6 +1244,7 @@ def anthropic_message_to_responses_items(message: Dict[str, Any]) -> List[Dict[s
 def anthropic_messages_to_responses(body: Dict[str, Any], fallback_model: str, upstream_model: Optional[str] = None, default_stream: bool = True) -> Dict[str, Any]:
     input_items: List[Dict[str, Any]] = []
     system_texts: List[str] = []
+    system_items: List[Dict[str, Any]] = []
 
     system = body.get("system")
     if isinstance(system, str) and system.strip():
@@ -1105,8 +1253,10 @@ def anthropic_messages_to_responses(body: Dict[str, Any], fallback_model: str, u
         for item in system:
             if isinstance(item, dict) and item.get("type") == "text":
                 system_texts.append(item.get("text", ""))
+                system_items.append(copy_cache_metadata(item, {"type": "input_text", "text": item.get("text", "")}))
             elif isinstance(item, str):
                 system_texts.append(item)
+                system_items.append({"type": "input_text", "text": item})
 
     for message in body.get("messages", []):
         if not isinstance(message, dict):
@@ -1119,7 +1269,9 @@ def anthropic_messages_to_responses(body: Dict[str, Any], fallback_model: str, u
         "stream": request_stream_enabled(body, default_stream),
     }
 
-    if system_texts:
+    if system_items and has_cache_metadata(system_items):
+        input_items.insert(0, {"role": "developer", "content": system_items})
+    elif system_texts:
         payload["instructions"] = "\n\n".join(system_texts)
     if isinstance(body.get("max_tokens"), int):
         payload["max_output_tokens"] = body["max_tokens"]
@@ -1146,9 +1298,9 @@ def anthropic_messages_to_chat_completions(body: Dict[str, Any], fallback_model:
     if isinstance(system, str) and system.strip():
         messages.append({"role": "system", "content": system})
     elif isinstance(system, list):
-        system_text = anthropic_content_to_text(system)
-        if system_text:
-            messages.append({"role": "system", "content": system_text})
+        system_content = content_to_chat_content(system) if has_cache_metadata(system) else anthropic_content_to_text(system)
+        if system_content:
+            messages.append({"role": "system", "content": system_content})
 
     for message in body.get("messages", []):
         if not isinstance(message, dict):
@@ -1160,6 +1312,7 @@ def anthropic_messages_to_chat_completions(body: Dict[str, Any], fallback_model:
         "messages": messages,
         "stream": request_stream_enabled(body, default_stream),
     }
+    enable_chat_stream_usage(payload)
     if isinstance(body.get("max_tokens"), int):
         payload["max_tokens"] = body["max_tokens"]
     if isinstance(body.get("temperature"), (int, float)):
@@ -1225,7 +1378,7 @@ def responses_tool_to_chat_tool(tool: Dict[str, Any]) -> Optional[Dict[str, Any]
             "description": tool.get("description", ""),
             "parameters": tool.get("parameters") or {},
         }
-    return {"type": "function", "function": function}
+    return copy_cache_metadata(tool, {"type": "function", "function": function})
 
 
 def responses_tool_choice_to_chat(tool_choice: Any) -> Any:
@@ -1234,6 +1387,29 @@ def responses_tool_choice_to_chat(tool_choice: Any) -> Any:
     if tool_choice.get("type") == "function" and tool_choice.get("name"):
         return {"type": "function", "function": {"name": tool_choice["name"]}}
     return tool_choice
+
+
+def enable_chat_stream_usage(payload: Dict[str, Any]) -> None:
+    if not payload.get("stream"):
+        return
+    stream_options = payload.get("stream_options") if isinstance(payload.get("stream_options"), dict) else {}
+    stream_options["include_usage"] = True
+    payload["stream_options"] = stream_options
+
+
+def responses_usage_from_chat_usage(usage: Dict[str, Any], fallback_input_tokens: int, fallback_output_text: str) -> Dict[str, Any]:
+    converted: Dict[str, Any] = {
+        "input_tokens": int(usage.get("prompt_tokens") or usage.get("input_tokens") or fallback_input_tokens),
+        "output_tokens": int(usage.get("completion_tokens") or usage.get("output_tokens") or (max(1, len(fallback_output_text) // 4) if fallback_output_text else 0)),
+    }
+    converted["total_tokens"] = int(usage.get("total_tokens") or converted["input_tokens"] + converted["output_tokens"])
+    for key in ("cache_creation_input_tokens", "cache_read_input_tokens", "cached_tokens"):
+        if usage.get(key) is not None:
+            converted[key] = usage[key]
+    for key in ("input_tokens_details", "prompt_tokens_details"):
+        if isinstance(usage.get(key), dict):
+            converted[key] = dict(usage[key])
+    return converted
 
 
 def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: str, upstream_model: Optional[str] = None, default_stream: bool = True) -> Dict[str, Any]:
@@ -1279,7 +1455,8 @@ def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: 
             message_role = "system" if role == "developer" else role
             message = {"role": message_role, "content": responses_content_to_chat_content(item.get("content"))}
             if message["role"] == "system":
-                message["content"] = responses_content_to_text(item.get("content"))
+                if not has_cache_metadata(item.get("content")):
+                    message["content"] = responses_content_to_text(item.get("content"))
                 system_messages.append(message)
             else:
                 messages.append(message)
@@ -1288,7 +1465,16 @@ def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: 
 
     final_messages = messages
     if system_messages:
-        system_content = "\n\n".join(str(item.get("content") or "") for item in system_messages if item.get("content"))
+        if any(has_cache_metadata(item.get("content")) for item in system_messages):
+            system_content: Any = []
+            for item in system_messages:
+                content = item.get("content")
+                if isinstance(content, list):
+                    system_content.extend(content)
+                elif content:
+                    system_content.append({"type": "text", "text": str(content)})
+        else:
+            system_content = "\n\n".join(str(item.get("content") or "") for item in system_messages if item.get("content"))
         final_messages = [{"role": "system", "content": system_content}] + messages
 
     payload: Dict[str, Any] = {
@@ -1296,6 +1482,7 @@ def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: 
         "messages": final_messages,
         "stream": request_stream_enabled(body, default_stream),
     }
+    enable_chat_stream_usage(payload)
     if isinstance(body.get("max_output_tokens"), int):
         payload["max_tokens"] = body["max_output_tokens"]
     if isinstance(body.get("temperature"), (int, float)):
@@ -1430,27 +1617,15 @@ def extract_text_delta(event: Optional[str], data: str) -> Tuple[str, Optional[D
             "replace_arguments": True,
         }
     if event_type == "response.completed":
-        response_obj = obj.get("response") if isinstance(obj.get("response"), dict) else obj
-        output = response_obj.get("output") if isinstance(response_obj, dict) else None
-        if isinstance(output, list):
-            output_text = responses_json_output_text(output)
-            if output_text:
-                return "delta", {"text": output_text, "completed": obj}
-            tool_payloads: List[Dict[str, Any]] = []
-            for output_index, item in enumerate(output):
-                if isinstance(item, dict) and item.get("type") == "function_call":
-                    tool_payloads.append({
-                        "id": item.get("call_id") or item.get("id") or f"toolu_proxy_{now_ms()}",
-                        "index": item.get("output_index", output_index),
-                        "name": item.get("name", ""),
-                        "arguments": item.get("arguments", "{}"),
-                        "replace_arguments": True,
-                    })
-            if tool_payloads:
-                return tool_call_kind_from_payloads(tool_payloads, False)
+        # response.completed contains the full accumulated output (text + tool calls)
+        # which was already sent incrementally via output_text.delta / output_item.added /
+        # function_call_arguments.delta events. Return "done" so callers can extract
+        # stop_reason and usage from the payload without re-emitting content.
         return "done", obj
 
     choices = obj.get("choices")
+    if isinstance(obj.get("usage"), dict) and (not isinstance(choices, list) or not choices):
+        return "usage", {"usage": obj["usage"], "raw": obj}
     if isinstance(choices, list) and choices:
         choice = choices[0] if isinstance(choices[0], dict) else {}
         delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else None
@@ -1459,17 +1634,19 @@ def extract_text_delta(event: Optional[str], data: str) -> Tuple[str, Optional[D
         tool_calls = delta.get("tool_calls") if is_delta else message.get("tool_calls")
         if isinstance(tool_calls, list) and tool_calls:
             return tool_call_kind_from_payloads(chat_tool_call_payloads(tool_calls, is_delta), is_delta)
-        text = (delta.get("content") if delta else None) or message.get("content") or ""
+        text = (delta.get("content") if delta else None) or ""
         if text:
             return "delta", {"text": text}
         if choice.get("finish_reason"):
             finish_reason = choice.get("finish_reason")
-            return "done", {"finish_reason": finish_reason, "raw": obj}
+            payload: Dict[str, Any] = {"finish_reason": finish_reason, "raw": obj}
+            if isinstance(obj.get("usage"), dict):
+                payload["usage"] = obj["usage"]
+            return "done", payload
 
     if event_type in ("error", "response.failed") or obj.get("error"):
         return "error", obj
     return "ignore", obj
-
 
 def parse_tool_arguments(arguments: Any) -> Dict[str, Any]:
     if isinstance(arguments, dict):
@@ -1730,11 +1907,7 @@ def chat_completion_json_to_responses(payload: Dict[str, Any], model: str, input
     response_payload = responses_completed_payload(response_id(), model, output, input_tokens, output_text)
     usage = payload.get("usage")
     if isinstance(usage, dict):
-        response_payload["usage"] = {
-            "input_tokens": int(usage.get("prompt_tokens") or usage.get("input_tokens") or response_payload["usage"]["input_tokens"]),
-            "output_tokens": int(usage.get("completion_tokens") or usage.get("output_tokens") or response_payload["usage"]["output_tokens"]),
-            "total_tokens": int(usage.get("total_tokens") or response_payload["usage"]["total_tokens"]),
-        }
+        response_payload["usage"] = responses_usage_from_chat_usage(usage, response_payload["usage"]["input_tokens"], output_text)
     return response_payload
 
 
@@ -1934,12 +2107,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
             upstream_payload = anthropic_messages_to_upstream(body_for_upstream, model_config, fallback_model, upstream_model, config.default_stream)
             upstream_payload = sanitized_upstream_payload_for_model(upstream_payload, model_config)
+            auto_cache_marks = apply_auto_cache_control(upstream_payload)
             log(
                 "request "
                 f"model={body.get('model')} route={model_config.model_id} "
                 f"upstream_model={upstream_payload.get('model')} "
                 f"format={model_config.api_format} "
-                f"messages={len(body.get('messages', []))} stream={stream}"
+                f"messages={len(body.get('messages', []))} stream={stream} "
+                f"cache_control={has_cache_metadata(upstream_payload)} auto_cache_marks={auto_cache_marks}"
             )
             if stream:
                 upstream_payload["stream"] = True
@@ -1981,11 +2156,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 return
             upstream_payload = responses_request_to_model_upstream(body_for_upstream, model_config, fallback_model, upstream_model, config.default_stream)
             upstream_payload = sanitized_upstream_payload_for_model(upstream_payload, model_config)
+            auto_cache_marks = apply_auto_cache_control(upstream_payload)
             log(
                 "codex request "
                 f"model={body.get('model')} route={model_config.model_id} "
                 f"upstream_model={upstream_payload.get('model')} "
-                f"format={model_config.api_format} stream={stream}"
+                f"format={model_config.api_format} stream={stream} "
+                f"cache_control={has_cache_metadata(upstream_payload)} auto_cache_marks={auto_cache_marks}"
             )
             if stream:
                 upstream_payload["stream"] = True
@@ -2034,6 +2211,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         tool_calls: List[Dict[str, Any]] = []
         thinking_state: Dict[str, Any] = {"in_thinking": False}
         done_payload: Optional[Dict[str, Any]] = None
+        chat_stream_usage: Optional[Dict[str, Any]] = None
         sequence_number = 0
         send_sse_headers(self)
 
@@ -2050,6 +2228,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if model_config.api_format == "chat_completions" and qwen_stream_bridge:
             non_stream_payload = dict(upstream_payload)
             non_stream_payload["stream"] = False
+            non_stream_payload.pop("stream_options", None)
             try:
                 with open_upstream(non_stream_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
                     raw_payload = response.read().decode("utf-8", errors="replace")
@@ -2104,6 +2283,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             output_text_parts.append(text)
                     elif kind in ("tool_call", "tool_call_delta", "tool_calls", "tool_calls_delta") and parsed:
                         merge_tool_call_payloads(tool_calls, parsed)
+                    elif kind == "usage" and parsed and isinstance(parsed.get("usage"), dict):
+                        chat_stream_usage = parsed["usage"]
                     elif kind == "error":
                         emit("response.failed", {"response": {"id": request_id, "status": "failed", "error": parsed}})
                         write_data_sse(self, "[DONE]")
@@ -2134,6 +2315,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if not output_text and not tool_calls:
             retry_payload = dict(upstream_payload)
             retry_payload["stream"] = False
+            retry_payload.pop("stream_options", None)
             try:
                 with open_upstream(retry_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
                     raw_payload = response.read().decode("utf-8", errors="replace")
@@ -2176,6 +2358,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
         completed = responses_completed_payload(request_id, model_config.model_id, output, estimate_value_tokens(body.get("input")), output_text)
         if done_payload and isinstance(done_payload.get("response"), dict):
             completed["usage"] = done_payload["response"].get("usage") or completed["usage"]
+        elif chat_stream_usage:
+            completed["usage"] = responses_usage_from_chat_usage(chat_stream_usage, completed["usage"]["input_tokens"], output_text)
+        log(f"codex response done model={model_config.model_id} chars={len(output_text)} tools={len(tool_calls)}{usage_cache_debug(completed.get('usage'))}")
         emit("response.completed", {"response": completed})
         write_data_sse(self, "[DONE]")
         self.close_connection = True
@@ -2183,6 +2368,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def handle_responses_non_streaming(self, body: Dict[str, Any], upstream_payload: Dict[str, Any], auth_token: str, upstream_url: str, timeout: int, model_config: ModelConfig) -> None:
         if model_config.api_format == "chat_completions":
             upstream_payload["stream"] = False
+            upstream_payload.pop("stream_options", None)
             try:
                 with open_upstream(upstream_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
                     raw_payload = response.read().decode("utf-8", errors="replace")
@@ -2192,6 +2378,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     estimate_value_tokens(body.get("input")),
                     upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
                 )
+                log(f"codex response done model={model_config.model_id} non_stream=true{usage_cache_debug(payload.get('usage'))}")
                 send_json(self, 200, payload)
                 return
             except urllib.error.HTTPError as exc:
@@ -2201,10 +2388,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 send_json(self, 502, responses_error_payload(f"Upstream response error: {exc}"))
                 return
         upstream_payload["stream"] = False
+        upstream_payload.pop("stream_options", None)
         try:
             with open_upstream(upstream_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
                 raw_payload = response.read().decode("utf-8", errors="replace")
-            send_json(self, 200, json.loads(raw_payload))
+            payload = json.loads(raw_payload)
+            log(f"codex response done model={model_config.model_id} non_stream=true{usage_cache_debug(payload.get('usage'))}")
+            send_json(self, 200, payload)
             return
         except urllib.error.HTTPError as exc:
             message = upstream_error_message(exc)
@@ -2275,6 +2465,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         text_block_started = False
         text_block_stopped = False
         done_payload: Optional[Dict[str, Any]] = None
+        chat_stream_usage: Optional[Dict[str, Any]] = None
         thinking_state: Dict[str, Any] = {"in_thinking": False}
         try:
             with open_upstream(upstream_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
@@ -2300,11 +2491,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             "index": 0,
                             "delta": {"type": "text_delta", "text": text},
                         })
-                        if parsed and isinstance(parsed.get("completed"), dict):
-                            done_payload = parsed["completed"]
-                            break
                     elif kind in ("tool_call", "tool_call_delta", "tool_calls", "tool_calls_delta") and parsed:
                         merge_tool_call_payloads(tool_calls, parsed)
+                    elif kind == "usage" and parsed and isinstance(parsed.get("usage"), dict):
+                        chat_stream_usage = parsed["usage"]
                     elif kind == "error":
                         write_sse(self, "error", {
                             "type": "error",
@@ -2333,6 +2523,35 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
 
         output_text = "".join(output_text_parts)
+        output_text, pseudo_tool_calls = parse_pseudo_function_calls(output_text, body.get("tools"))
+        if pseudo_tool_calls:
+            for pseudo_tool_call in pseudo_tool_calls:
+                merge_tool_call_payloads(tool_calls, pseudo_tool_call)
+        if not output_text and not tool_calls:
+            # Fallback: extract text from done_payload if stream deltas were empty
+            if isinstance(done_payload, dict):
+                response_obj = done_payload.get("response") if isinstance(done_payload.get("response"), dict) else done_payload
+                fallback_output = response_obj.get("output") if isinstance(response_obj, dict) else None
+                if isinstance(fallback_output, list):
+                    output_text = responses_json_output_text(fallback_output)
+                if not output_text:
+                    fallback_choices = done_payload.get("raw", {}).get("choices") if isinstance(done_payload.get("raw"), dict) else None
+                    if isinstance(fallback_choices, list) and fallback_choices:
+                        output_text = fallback_choices[0].get("message", {}).get("content", "") if isinstance(fallback_choices[0], dict) else ""
+            log(f"anthropic empty stream fallback model={model_config.model_id} chars={len(output_text)}")
+            if output_text and not text_block_started:
+                # Fallback recovered text - emit content_block events
+                write_sse(self, "content_block_start", {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": "text", "text": ""},
+                })
+                text_block_started = True
+                write_sse(self, "content_block_delta", {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": "text_delta", "text": output_text},
+                })
         if text_block_started and not text_block_stopped:
             write_sse(self, "content_block_stop", {"type": "content_block_stop", "index": 0})
             text_block_stopped = True
@@ -2354,7 +2573,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
             })
             write_sse(self, "content_block_stop", {"type": "content_block_stop", "index": block_index})
         stop_reason = stop_reason_from_done(done_payload, tool_calls)
-        log(f"response done model={model_config.model_id} deltas={delta_count} chars={len(output_text)} tools={len(tool_calls)}")
+        response_usage = done_payload.get("response", {}).get("usage") if isinstance(done_payload, dict) and isinstance(done_payload.get("response"), dict) else None
+        if not response_usage and chat_stream_usage:
+            response_usage = responses_usage_from_chat_usage(chat_stream_usage, 0, output_text)
+        log(f"response done model={model_config.model_id} deltas={delta_count} chars={len(output_text)} tools={len(tool_calls)}{usage_cache_debug(response_usage)}")
         write_sse(self, "message_delta", {
             "type": "message_delta",
             "delta": {"stop_reason": stop_reason, "stop_sequence": None},
@@ -2365,11 +2587,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
     def handle_non_streaming(self, body: Dict[str, Any], upstream_payload: Dict[str, Any], auth_token: str, upstream_url: str, timeout: int, model_config: ModelConfig) -> None:
         upstream_payload["stream"] = False
+        upstream_payload.pop("stream_options", None)
         try:
             with open_upstream(upstream_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
                 raw_payload = response.read().decode("utf-8", errors="replace")
             payload = json.loads(raw_payload)
             if isinstance(payload.get("output"), list):
+                log(f"response done model={model_config.model_id} non_stream=true{usage_cache_debug(payload.get('usage'))}")
                 send_json(self, 200, responses_json_to_anthropic_message(payload, model_config))
                 return
             if isinstance(payload.get("choices"), list):
@@ -2379,6 +2603,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     estimate_value_tokens(body.get("messages")),
                     upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
                 )
+                log(f"response done model={model_config.model_id} non_stream=true{usage_cache_debug(converted.get('usage'))}")
                 send_json(self, 200, responses_json_to_anthropic_message(converted, model_config))
                 return
             raise ValueError("Responses JSON missing output list")
