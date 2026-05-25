@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -84,6 +84,7 @@ if [[ "$ONE_FILE_ONLY" != "1" ]]; then
     --add-data "src/safe_io.py:." \
     --add-data "VERSION:." \
     --add-data "docs/headless-config.example.json:." \
+    --paths src \
     app.py
 
   rm -rf "build/$PACKAGE_ROOT"
@@ -185,6 +186,7 @@ EOF
     --add-data "src/safe_io.py:." \
     --add-data "VERSION:." \
     --add-data "docs/headless-config.example.json:." \
+    --paths src \
     app.py
 
   cp "dist/$APP_NAME" "release/$APP_NAME"
