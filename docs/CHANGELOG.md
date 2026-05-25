@@ -1,3 +1,14 @@
+﻿
+## v4.4.0 (2026-05-25)
+
+- Fix: apply_auto_cache_control now works for Responses format payloads (Codex)
+- Fix: stop_reason_from_done correctly extracts stop_reason from response.completed
+- Fix: add Qwen/GLM non-stream bridge to Anthropic Messages streaming endpoint
+- Fix: add /v1/models GET endpoint for Claude Code startup compatibility
+- New: ModelConfig.stream_bridge config field replaces hardcoded Qwen detection
+- Refactor: move source modules into src/ directory
+- Refactor: move build scripts to build/, docs to docs/, tests to tests/
+- Docs: add PROJECT-INDEX.md and CHANGELOG-v4.3.3.md
 # Changelog
 
 ## v4.3.2 - 2026-05-20
