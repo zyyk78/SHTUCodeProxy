@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Minimal Anthropic Messages -> OpenAI Responses streaming proxy for Claude Code.
 
@@ -1827,7 +1827,6 @@ def stop_reason_from_done(parsed: Optional[Dict[str, Any]], tool_calls: List[Dic
     if status == "failed":
         return "end_turn"
     return "end_turn"
-    return "end_turn"
 
 
 def compact_jsonish_outside_strings(value: str) -> str:
@@ -2425,7 +2424,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         except urllib.error.HTTPError as exc:
             message = upstream_error_message(exc)
             log(f"upstream http error model={model_config.model_id} status={exc.code} body={message[:500]}")
-            send_json(self, 502, {"type": "error", "error": {"type": "api_error", "message": message}})
+            send_json(self, 502, responses_error_payload(upstream_error_message(exc)))
             return
         except Exception as exc:
             log(f"non-stream responses fallback model={model_config.model_id} error={exc}")
