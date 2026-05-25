@@ -34,7 +34,8 @@
       "api_format": "chat_completions",
       "supports_image": false,
       "supports_audio": false,
-      "supports_video": false
+      "supports_video": false,
+      "stream_bridge": false
     },
     {
       "name": "DeepSeek Chat",
@@ -45,7 +46,8 @@
       "api_format": "chat_completions",
       "supports_image": false,
       "supports_audio": false,
-      "supports_video": false
+      "supports_video": false,
+      "stream_bridge": false
     },
     {
       "name": "GLM Chat",
@@ -56,7 +58,8 @@
       "api_format": "chat_completions",
       "supports_image": false,
       "supports_audio": false,
-      "supports_video": false
+      "supports_video": false,
+      "stream_bridge": false
     },
     {
       "name": "Qwen Instruct",
@@ -67,7 +70,8 @@
       "api_format": "chat_completions",
       "supports_image": true,
       "supports_audio": false,
-      "supports_video": false
+      "supports_video": false,
+      "stream_bridge": true
     }
   ]
 }

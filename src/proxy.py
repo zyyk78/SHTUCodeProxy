@@ -2068,6 +2068,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def do_HEAD(self) -> None:
         path = self.route_path()
         if path in ("/", "/health", "/v1"):
+            self.send_response(200)
             self.send_header("content-type", "application/json; charset=utf-8")
             self.end_headers()
             return
@@ -2078,7 +2079,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if self.route_path() in ("/", "/health", "/v1"):
             send_json(self, 200, {"ok": True, "service": "shtu-claude-proxy"})
             return
-        if path in ("/v1/models", "/models"):
+        if self.route_path() in ("/v1/models", "/models"):
             config = current_config()
             models = []
             for mc in config.models:

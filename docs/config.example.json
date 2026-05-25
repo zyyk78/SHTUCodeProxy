@@ -1,4 +1,4 @@
-﻿{
+{
   "host": "127.0.0.1",
   "port": 8082,
   "default_model_id": "GPT-5.5",
@@ -26,7 +26,8 @@
       "base_url": "https://genaiapi.shanghaitech.edu.cn/api/v1/start",
       "api_key": "",
       "upstream_model": "deepseek-pro",
-      "api_format": "chat_completions"
+      "api_format": "chat_completions",
+      "stream_bridge": false
     }
   ],
   "claude_path": "%APPDATA%\\npm\\claude.cmd",
