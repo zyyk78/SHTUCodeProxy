@@ -110,3 +110,6 @@ ScreenShot_*.png
 
 # Remove the old conflicting rules below
 # (The comprehensive rules above replace them)
+# Moved directories
+assets/
+test_support/

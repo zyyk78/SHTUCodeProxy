@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -74,9 +74,9 @@ if [[ "$ONE_FILE_ONLY" != "1" ]]; then
     --noconfirm \
     --clean \
     --name "$FOLDER_NAME" \
-    --icon "assets/shtucodeproxy.ico" \
+    --icon "build/shtucodeproxy.ico" \
     "${PYINSTALLER_LINUX_BINARIES[@]}" \
-    --add-data "assets:assets" \
+    --add-data "build/shtucodeproxy.ico:assets" \
     --add-data "proxy.py:." \
     --add-data "cli.py:." \
     --add-data "pyqt_gui.py:." \
@@ -84,15 +84,15 @@ if [[ "$ONE_FILE_ONLY" != "1" ]]; then
     --add-data "config_store.py:." \
     --add-data "safe_io.py:." \
     --add-data "VERSION:." \
-    --add-data "headless-config.example.json:." \
+    --add-data "docs/headless-config.example.json:." \
     app.py
 
   rm -rf "build/$PACKAGE_ROOT"
   mkdir -p "build/$PACKAGE_ROOT"
   cp -R "dist/$FOLDER_NAME" "build/$PACKAGE_ROOT/$FOLDER_NAME"
   cp linux_launcher.py "build/$PACKAGE_ROOT/run_shtucodeproxy.py"
-  cp "assets/shtucodeproxy.ico" "build/$PACKAGE_ROOT/shtucodeproxy.ico"
-  cp headless-config.example.json "build/$PACKAGE_ROOT/headless-config.example.json"
+  cp "build/shtucodeproxy.ico" "build/$PACKAGE_ROOT/shtucodeproxy.ico"
+  cp docs/headless-config.example.json "build/$PACKAGE_ROOT/headless-config.example.json"
   cat > "build/$PACKAGE_ROOT/shtucodeproxy.desktop" <<EOF
 [Desktop Entry]
 Type=Application
@@ -113,7 +113,7 @@ Usage:
 
 Headless CLI examples:
 - python3 run_shtucodeproxy.py configure-model --model-id glm-chat --api-key YOUR_KEY --upstream-model glm-chat --api-format chat_completions --default --codex
-- cp headless-config.example.json config.json; edit config.json; python3 run_shtucodeproxy.py apply-config config.json --write-claude --write-codex --start
+- cp docs/headless-config.example.json config.json; edit config.json; python3 run_shtucodeproxy.py apply-config config.json --write-claude --write-codex --start
 - python3 run_shtucodeproxy.py start
 - python3 run_shtucodeproxy.py status
 - python3 run_shtucodeproxy.py stop
@@ -143,15 +143,15 @@ if [[ "$ONE_DIR_ONLY" != "1" ]]; then
     --add-data "config_store.py:." \
     --add-data "safe_io.py:." \
     --add-data "VERSION:." \
-    --add-data "headless-config.example.json:." \
-    cli_app.py
+    --add-data "docs/headless-config.example.json:." \
+    cli.py
 
   cp "dist/$CLI_NAME" "release/$CLI_NAME"
   rm -rf "build/$HEADLESS_BUNDLE"
   mkdir -p "build/$HEADLESS_BUNDLE"
   cp "dist/$CLI_NAME" "build/$HEADLESS_BUNDLE/$CLI_NAME"
-  cp headless-config.example.json "build/$HEADLESS_BUNDLE/headless-config.example.json"
-  cp headless-config.example.json "build/$HEADLESS_BUNDLE/config.json"
+  cp docs/headless-config.example.json "build/$HEADLESS_BUNDLE/headless-config.example.json"
+  cp docs/headless-config.example.json "build/$HEADLESS_BUNDLE/config.json"
   cat > "build/$HEADLESS_BUNDLE/README-HEADLESS.txt" <<EOF
 SHTUCodeProxy v${VERSION} headless Linux CLI package
 
@@ -176,9 +176,9 @@ EOF
     --clean \
     --onefile \
     --name "$APP_NAME" \
-    --icon "assets/shtucodeproxy.ico" \
+    --icon "build/shtucodeproxy.ico" \
     "${PYINSTALLER_LINUX_BINARIES[@]}" \
-    --add-data "assets:assets" \
+    --add-data "build/shtucodeproxy.ico:assets" \
     --add-data "proxy.py:." \
     --add-data "cli.py:." \
     --add-data "pyqt_gui.py:." \
@@ -186,7 +186,7 @@ EOF
     --add-data "config_store.py:." \
     --add-data "safe_io.py:." \
     --add-data "VERSION:." \
-    --add-data "headless-config.example.json:." \
+    --add-data "docs/headless-config.example.json:." \
     app.py
 
   cp "dist/$APP_NAME" "release/$APP_NAME"

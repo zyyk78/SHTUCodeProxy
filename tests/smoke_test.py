@@ -41,6 +41,10 @@ from proxy import (
     sanitized_anthropic_body_for_model,
     sanitized_responses_body_for_model,
     sanitized_upstream_payload_for_model,
+    usage_cache_debug,
+    log,
+    apply_auto_cache_control,
+    has_cache_metadata,
 )
 
 
@@ -159,6 +163,73 @@ def exercise_tool_call_translation() -> None:
     exec_item = codex_function_call_item({"name": "exec_command", "arguments": '{"cmd":"echo test"}'})
     exec_args = json.loads(exec_item["arguments"])
     assert_true(exec_item["name"] == "exec_command" and exec_args["cmd"] == "echo test", "Codex exec_command tool name and cmd argument must be preserved")
+
+
+def exercise_cache_control_passthrough() -> None:
+    cache_control = {"type": "ephemeral"}
+    anthropic_body = {
+        "model": "smoke-model",
+        "system": [{"type": "text", "text": "stable system prompt", "cache_control": cache_control}],
+        "tools": [{
+            "name": "read_file",
+            "description": "Read a file",
+            "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}},
+            "cache_control": cache_control,
+        }],
+        "messages": [{"role": "user", "content": [{"type": "text", "text": "hello", "cache_control": cache_control}]}],
+    }
+
+    responses_payload = anthropic_messages_to_responses(anthropic_body, "fallback", "upstream")
+    assert_true(responses_payload["input"][0]["role"] == "developer", "cached Anthropic system blocks should remain in Responses input")
+    assert_true(responses_payload["input"][0]["content"][0]["cache_control"] == cache_control, "Anthropic system cache_control should pass through to Responses")
+    assert_true(responses_payload["input"][1]["content"][0]["cache_control"] == cache_control, "Anthropic message cache_control should pass through to Responses")
+    assert_true(responses_payload["tools"][0]["cache_control"] == cache_control, "Anthropic tool cache_control should pass through to Responses")
+
+    chat_payload = anthropic_messages_to_chat_completions(anthropic_body, "fallback", "upstream")
+    assert_true(chat_payload["messages"][0]["content"][0]["cache_control"] == cache_control, "Anthropic system cache_control should pass through to Chat")
+    assert_true(chat_payload["messages"][1]["content"][0]["cache_control"] == cache_control, "Anthropic message cache_control should pass through to Chat")
+    assert_true(chat_payload["tools"][0]["cache_control"] == cache_control, "Anthropic tool cache_control should pass through to Chat")
+
+    codex_body = {
+        "model": "smoke-model",
+        "input": [{"role": "developer", "content": [{"type": "input_text", "text": "stable instructions", "cache_control": cache_control}]}],
+        "tools": [{"type": "function", "name": "read_file", "parameters": {"type": "object"}, "cache_control": cache_control}],
+    }
+    assert_true(responses_request_to_upstream(codex_body, "fallback", "upstream")["input"][0]["content"][0]["cache_control"] == cache_control, "Codex Responses cache_control should pass through unchanged")
+    codex_chat_payload = responses_request_to_chat_completions(codex_body, "fallback", "upstream")
+    assert_true(any(part.get("cache_control") == cache_control for part in codex_chat_payload["messages"][0]["content"]), "Codex developer cache_control should pass through to Chat")
+    assert_true(codex_chat_payload["tools"][0]["cache_control"] == cache_control, "Codex tool cache_control should pass through to Chat")
+    assert_true(codex_chat_payload["stream_options"]["include_usage"] is True, "Chat streaming should request usage chunks")
+    usage_kind, usage_parsed = extract_text_delta(None, json.dumps({"choices": [], "usage": {"prompt_tokens_details": {"cached_tokens": 34}}}))
+    assert_true(usage_kind == "usage" and usage_parsed and usage_parsed["usage"]["prompt_tokens_details"]["cached_tokens"] == 34, "Chat usage-only chunks should be parsed")
+    assert_true("cache_read_input_tokens" in usage_cache_debug({"cache_read_input_tokens": 12}), "Anthropic cache read usage should be logged")
+    assert_true("details_cached_tokens" in usage_cache_debug({"input_tokens_details": {"cached_tokens": 34}}), "OpenAI cached token usage should be logged")
+
+    codex_chat_without_cache = responses_request_to_chat_completions({
+        "model": "glm-chat",
+        "input": [
+            {"role": "developer", "content": [{"type": "input_text", "text": "stable developer prompt"}]},
+            {"role": "user", "content": [{"type": "input_text", "text": "first question"}]},
+            {"role": "assistant", "content": [{"type": "output_text", "text": "first answer"}]},
+            {"role": "user", "content": [{"type": "input_text", "text": "current question"}]},
+        ],
+        "tools": [{"type": "function", "name": "read_file", "parameters": {"type": "object"}}],
+    }, "fallback", "glm-chat")
+    auto_marks = apply_auto_cache_control(codex_chat_without_cache)
+    assert_true(auto_marks >= 2, "Codex Chat payload should get automatic cache boundaries")
+    assert_true(codex_chat_without_cache["tools"][0]["cache_control"] == cache_control, "auto cache should mark tool definitions")
+    assert_true(any(part.get("cache_control") == cache_control for part in codex_chat_without_cache["messages"][0]["content"]), "auto cache should mark system/developer content")
+    assert_true(not has_cache_metadata(codex_chat_without_cache["messages"][-1]), "auto cache should not mark the current user turn")
+    responses_without_cache = responses_request_to_upstream({"model": "GPT-5.5", "input": [{"role": "developer", "content": [{"type": "input_text", "text": "stable"}]}]}, "fallback", "GPT-5.5")
+    assert_true(apply_auto_cache_control(responses_without_cache) == 0 and not has_cache_metadata(responses_without_cache), "Responses payloads should not get unsupported cache_control automatically")
+
+
+def exercise_file_logging(tmpdir: Path) -> None:
+    log_dir = tmpdir / "app-log"
+    with patch("proxy.app_dir", return_value=log_dir):
+        log("smoke file log entry")
+    log_file = log_dir / "proxy.log"
+    assert_true(log_file.exists() and "smoke file log entry" in log_file.read_text(encoding="utf-8"), "proxy.log should be written for GUI builds")
 
 
 def exercise_chat_completion_json_to_responses() -> None:
@@ -1349,6 +1420,8 @@ def main() -> int:
         assert_true(portable_claude_path("") != "", "portable claude path fallback empty")
         assert_true(portable_settings_path("").endswith(str(Path(".claude") / "settings.json")), "settings fallback mismatch")
         exercise_tool_call_translation()
+        exercise_cache_control_passthrough()
+        exercise_file_logging(tmpdir)
         exercise_chat_completion_json_to_responses()
         exercise_mixed_tool_result_ordering()
         exercise_model_suffix_routing()

@@ -6,7 +6,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
-$Root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $Root
 
 $Version = (Get-Content "$Root\VERSION" -Raw -ErrorAction SilentlyContinue).Trim()
@@ -34,8 +34,8 @@ if (-not $OneFileOnly) {
     --clean `
     --name SHTUCodeProxy `
     --windowed `
-    --icon "assets\shtucodeproxy.ico" `
-    --add-data "assets;assets" `
+    --icon "build\shtucodeproxy.ico" `
+    --add-data "build\shtucodeproxy.ico;assets" `
     --add-data "proxy.py;." `
     --add-data "cli.py;." `
     --add-data "pyqt_gui.py;." `
@@ -43,7 +43,7 @@ if (-not $OneFileOnly) {
     --add-data "config_store.py;." `
     --add-data "safe_io.py;." `
     --add-data "VERSION;." `
-    --add-data "headless-config.example.json;." `
+    --add-data "docs\headless-config.example.json;." `
     app.py
 
   Compress-Archive `
@@ -63,8 +63,8 @@ if (-not $OneDirOnly) {
     --onefile `
     --name $OneFileName `
     --windowed `
-    --icon "assets\shtucodeproxy.ico" `
-    --add-data "assets;assets" `
+    --icon "build\shtucodeproxy.ico" `
+    --add-data "build\shtucodeproxy.ico;assets" `
     --add-data "proxy.py;." `
     --add-data "cli.py;." `
     --add-data "pyqt_gui.py;." `
@@ -72,7 +72,7 @@ if (-not $OneDirOnly) {
     --add-data "config_store.py;." `
     --add-data "safe_io.py;." `
     --add-data "VERSION;." `
-    --add-data "headless-config.example.json;." `
+    --add-data "docs\headless-config.example.json;." `
     app.py
 
   Copy-Item `

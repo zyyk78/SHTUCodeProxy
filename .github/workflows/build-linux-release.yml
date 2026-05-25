@@ -6,7 +6,7 @@ on:
       tag:
         description: "Release tag to attach assets to"
         required: true
-        default: "v4.1.1"
+        default: "v4.3.3"
 
 permissions:
   contents: write
@@ -49,10 +49,10 @@ jobs:
             libxrender1
 
       - name: Install Python build dependencies
-        run: python -m pip install -r requirements-build.txt
+        run: python -m pip install -r build/requirements-build.txt
 
       - name: Build Linux packages
-        run: bash ./build_unix.sh
+        run: bash ./build/build_unix.sh
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
