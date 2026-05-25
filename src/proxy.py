@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Minimal Anthropic Messages -> OpenAI Responses streaming proxy for Claude Code.
 
@@ -712,11 +712,12 @@ def apply_auto_cache_control_to_responses_payload(payload: Dict[str, Any]) -> in
 def apply_auto_cache_control(payload: Dict[str, Any]) -> int:
     if not auto_cache_enabled() or has_cache_metadata(payload):
         return 0
-    if not isinstance(payload.get("messages"), list):
-        return 0
+    if isinstance(payload.get("input"), (list, str)):
+        return apply_auto_cache_control_to_responses_payload(payload)
     if isinstance(payload.get("messages"), list):
         return apply_auto_cache_control_to_chat_payload(payload)
     return 0
+
 
 
 def content_modalities(content: Any) -> set[str]:
@@ -1805,11 +1806,27 @@ def filter_thinking_text_delta(text: str, state: Dict[str, Any]) -> str:
 def stop_reason_from_done(parsed: Optional[Dict[str, Any]], tool_calls: List[Dict[str, Any]]) -> str:
     if tool_calls:
         return "tool_use"
-    finish_reason = parsed.get("finish_reason") if isinstance(parsed, dict) else None
+    if not isinstance(parsed, dict):
+        return "end_turn"
+    finish_reason = parsed.get("finish_reason")
     if finish_reason == "tool_calls":
         return "tool_use"
     if finish_reason in ("length", "max_tokens"):
         return "max_tokens"
+    # Responses API format: the done payload may be the full response object
+    # or wrapped in {"response": ...}; check both for status and function_call output
+    response_obj = parsed.get("response") if isinstance(parsed.get("response"), dict) else parsed
+    status = response_obj.get("status") if isinstance(response_obj, dict) else None
+    if status in ("incomplete", "cancelled"):
+        return "max_tokens"
+    output = response_obj.get("output") if isinstance(response_obj, dict) and isinstance(response_obj.get("output"), list) else None
+    if isinstance(output, list):
+        for item in output:
+            if isinstance(item, dict) and item.get("type") == "function_call":
+                return "tool_use"
+    if status == "failed":
+        return "end_turn"
+    return "end_turn"
     return "end_turn"
 
 
@@ -2049,8 +2066,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_HEAD(self) -> None:
-        if self.route_path() in ("/", "/health", "/v1"):
-            self.send_response(200)
+        path = self.route_path()
+        if path in ("/", "/health", "/v1"):
             self.send_header("content-type", "application/json; charset=utf-8")
             self.end_headers()
             return
@@ -2061,6 +2078,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if self.route_path() in ("/", "/health", "/v1"):
             send_json(self, 200, {"ok": True, "service": "shtu-claude-proxy"})
             return
+        if path in ("/v1/models", "/models"):
+            config = current_config()
+            models = []
+            for mc in config.models:
+                models.append({"id": mc.model_id, "object": "model", "owned_by": "shtu-proxy"})
+            send_json(self, 200, {"object": "list", "data": models})
+            return
+
         send_json(self, 404, {"type": "error", "error": {"type": "not_found_error", "message": "Not found"}})
 
     def do_POST(self) -> None:
@@ -2467,6 +2492,73 @@ class ProxyHandler(BaseHTTPRequestHandler):
         done_payload: Optional[Dict[str, Any]] = None
         chat_stream_usage: Optional[Dict[str, Any]] = None
         thinking_state: Dict[str, Any] = {"in_thinking": False}
+        qwen_stream_bridge = "qwen" in f"{model_config.model_id} {model_config.upstream_model}".lower()
+        if model_config.api_format == "chat_completions" and qwen_stream_bridge:
+            non_stream_payload = dict(upstream_payload)
+            non_stream_payload["stream"] = False
+            non_stream_payload.pop("stream_options", None)
+            try:
+                with open_upstream(non_stream_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
+                    raw_payload = response.read().decode("utf-8", errors="replace")
+                chat_json = json.loads(raw_payload)
+                if isinstance(chat_json.get("choices"), list):
+                    converted = chat_completion_json_to_responses(
+                        chat_json,
+                        model_config.model_id,
+                        estimate_value_tokens(body.get("messages")),
+                        non_stream_payload.get("tools") if isinstance(non_stream_payload.get("tools"), list) else None,
+                    )
+                    anthropic_msg = responses_json_to_anthropic_message(converted, model_config)
+                else:
+                    anthropic_msg = responses_json_to_anthropic_message(chat_json, model_config)
+                for block_index, block in enumerate(anthropic_msg.get("content", [])):
+                    block_type = block.get("type", "text")
+                    write_sse(self, "content_block_start", {
+                        "type": "content_block_start",
+                        "index": block_index,
+                        "content_block": block,
+                    })
+                    if block_type == "text" and block.get("text"):
+                        write_sse(self, "content_block_delta", {
+                            "type": "content_block_delta",
+                            "index": block_index,
+                            "delta": {"type": "text_delta", "text": block["text"]},
+                        })
+                    elif block_type == "tool_use":
+                        write_sse(self, "content_block_delta", {
+                            "type": "content_block_delta",
+                            "index": block_index,
+                            "delta": {"type": "input_json_delta", "partial_json": json_dumps_compact(block.get("input", {}))},
+                        })
+                    write_sse(self, "content_block_stop", {"type": "content_block_stop", "index": block_index})
+                stop_reason = anthropic_msg.get("stop_reason", "end_turn")
+                usage = anthropic_msg.get("usage", {})
+                write_sse(self, "message_delta", {
+                    "type": "message_delta",
+                    "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+                    "usage": {"output_tokens": usage.get("output_tokens", 0)},
+                })
+                write_sse(self, "message_stop", {"type": "message_stop"})
+                self.close_connection = True
+                return
+            except urllib.error.HTTPError as exc:
+                message = upstream_error_message(exc)
+                log(f"qwen bridge http error model={model_config.model_id} status={exc.code} body={message[:500]}")
+                write_sse(self, "error", {
+                    "type": "error",
+                    "error": {"type": "api_error", "message": message},
+                })
+                self.close_connection = True
+                return
+            except Exception as exc:
+                log(f"qwen bridge error model={model_config.model_id} error={exc}")
+                write_sse(self, "error", {
+                    "type": "error",
+                    "error": {"type": "api_error", "message": f"Qwen bridge error: {exc}"},
+                })
+                self.close_connection = True
+                return
+
         try:
             with open_upstream(upstream_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
                 log(f"upstream connected model={model_config.model_id} format={model_config.api_format} status={getattr(response, 'status', 'unknown')}")
