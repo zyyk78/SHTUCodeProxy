@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Minimal Anthropic Messages -> OpenAI Responses streaming proxy for Claude Code.
 
@@ -1830,6 +1830,8 @@ def stop_reason_from_done(parsed: Optional[Dict[str, Any]], tool_calls: List[Dic
     if status == "failed":
         return "end_turn"
 
+
+    return "end_turn"
 
 def compact_jsonish_outside_strings(value: str) -> str:
     output: List[str] = []
