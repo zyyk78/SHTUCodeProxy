@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Minimal Anthropic Messages -> OpenAI Responses streaming proxy for Claude Code.
 
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import copy
 import json
 import os
 import re
@@ -1181,7 +1182,7 @@ def anthropic_message_to_chat_messages(message: Dict[str, Any]) -> List[Dict[str
             messages.append({
                 "role": "tool",
                 "tool_call_id": result.get("tool_use_id", ""),
-                "content": tool_result_content_to_text(result.get("content", "")),
+                "content": ("[ERROR] " if result.get("is_error") else "") + tool_result_content_to_text(result.get("content", "")),
             })
         visible_text = anthropic_tool_results_visible_text(tool_results)
         if text:
@@ -1220,7 +1221,7 @@ def anthropic_message_to_responses_items(message: Dict[str, Any]) -> List[Dict[s
             items.append({
                 "type": "function_call_output",
                 "call_id": result.get("tool_use_id", ""),
-                "output": tool_result_content_to_text(result.get("content", "")),
+                "output": ("[ERROR] " if result.get("is_error") else "") + tool_result_content_to_text(result.get("content", "")),
             })
         if text:
             items.append({"role": role, "content": text})
@@ -1289,6 +1290,9 @@ def anthropic_messages_to_responses(body: Dict[str, Any], fallback_model: str, u
     if tool_choice is not None:
         payload["tool_choice"] = tool_choice
 
+    if isinstance(body.get("thinking"), dict):
+        payload["thinking"] = body["thinking"]
+
     return payload
 
 
@@ -1337,7 +1341,7 @@ def anthropic_messages_to_upstream(body: Dict[str, Any], model_config: ModelConf
 
 
 def responses_request_to_upstream(body: Dict[str, Any], fallback_model: str, upstream_model: Optional[str] = None, default_stream: bool = True) -> Dict[str, Any]:
-    payload: Dict[str, Any] = dict(body)
+    payload: Dict[str, Any] = copy.deepcopy(body)
     payload["model"] = upstream_model or os.getenv("UPSTREAM_MODEL") or body.get("model") or fallback_model
     payload["stream"] = request_stream_enabled(body, default_stream)
     return payload
@@ -2051,6 +2055,24 @@ def responses_json_to_anthropic_message(payload: Dict[str, Any], model_config: M
     }
 
 
+def extract_anthropic_usage(done_payload: Optional[Dict[str, Any]], chat_stream_usage: Optional[Dict[str, Any]], text: str) -> Dict[str, Any]:
+    """Extract real usage from done_payload or chat_stream_usage, falling back to estimates."""
+    if isinstance(done_payload, dict):
+        response_obj = done_payload.get("response") if isinstance(done_payload.get("response"), dict) else done_payload
+        usage = response_obj.get("usage") if isinstance(response_obj, dict) else None
+        if isinstance(usage, dict):
+            return {
+                "input_tokens": int(usage.get("input_tokens") or 0),
+                "output_tokens": int(usage.get("output_tokens") or (max(1, len(text) // 4) if text else 0)),
+            }
+    if isinstance(chat_stream_usage, dict):
+        return {
+            "input_tokens": int(chat_stream_usage.get("prompt_tokens") or chat_stream_usage.get("input_tokens") or 0),
+            "output_tokens": int(chat_stream_usage.get("completion_tokens") or chat_stream_usage.get("output_tokens") or (max(1, len(text) // 4) if text else 0)),
+        }
+    return {"input_tokens": 0, "output_tokens": max(1, len(text) // 4) if text else 0}
+
+
 class ProxyHandler(BaseHTTPRequestHandler):
     server_version = "shtu-claude-proxy/0.1"
 
@@ -2107,6 +2129,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         try:
             body = read_json_body(self)
+            # Read anthropic-beta header for feature detection
+            beta_header = self.headers.get("anthropic-beta", "")
+            if "interleaved-thinking" in beta_header and "thinking" not in body:
+                body["thinking"] = {"type": "enabled", "budget_tokens": body.get("max_tokens", 8192)}
+            elif "prompt-caching" in beta_header:
+                body.setdefault("_beta_caching", True)
+
             config = current_config()
             stream = request_stream_enabled(body, config.default_stream)
             model_config = config.find_model(body.get("model"))
@@ -2235,6 +2264,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         output_text_parts: List[str] = []
         tool_calls: List[Dict[str, Any]] = []
         thinking_state: Dict[str, Any] = {"in_thinking": False}
+        chat_stream_usage: Optional[Dict[str, Any]] = None
         done_payload: Optional[Dict[str, Any]] = None
         chat_stream_usage: Optional[Dict[str, Any]] = None
         sequence_number = 0
@@ -2466,6 +2496,55 @@ class ProxyHandler(BaseHTTPRequestHandler):
             payload["usage"] = done_payload["response"].get("usage") or payload["usage"]
         send_json(self, 200, payload)
 
+    def _send_anthropic_stream_error(self, error_message: str, text_block_started: bool, text_block_stopped: bool) -> None:
+        """Send an error as a proper Anthropic SSE stream ending sequence instead of a non-standard error event."""
+        if not text_block_started:
+            write_sse(self, "content_block_start", {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            })
+            text_block_started = True
+        if not text_block_stopped:
+            write_sse(self, "content_block_delta", {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": f"[Proxy Error] {error_message}"},
+            })
+            write_sse(self, "content_block_stop", {"type": "content_block_stop", "index": 0})
+            text_block_stopped = True
+        write_sse(self, "message_delta", {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+            "usage": {"output_tokens": 0},
+        })
+        write_sse(self, "message_stop", {"type": "message_stop"})
+        self.close_connection = True
+
+    def _send_anthropic_stream_error(self, error_message: str, text_block_started: bool, text_block_stopped: bool) -> None:
+        """Send an error as a proper Anthropic SSE stream ending sequence instead of a non-standard error event."""
+        if not text_block_started:
+            write_sse(self, "content_block_start", {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            })
+            text_block_started = True
+        if not text_block_stopped:
+            write_sse(self, "content_block_delta", {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": f"[Proxy Error] {error_message}"},
+            })
+            write_sse(self, "content_block_stop", {"type": "content_block_stop", "index": 0})
+        write_sse(self, "message_delta", {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+            "usage": {"output_tokens": 0},
+        })
+        write_sse(self, "message_stop", {"type": "message_stop"})
+        self.close_connection = True
+
     def handle_streaming(self, body: Dict[str, Any], upstream_payload: Dict[str, Any], auth_token: str, upstream_url: str, timeout: int, model_config: ModelConfig) -> None:
         message_id = anthropic_message_id()
         model = model_config.model_id
@@ -2544,19 +2623,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
             except urllib.error.HTTPError as exc:
                 message = upstream_error_message(exc)
                 log(f"qwen bridge http error model={model_config.model_id} status={exc.code} body={message[:500]}")
-                write_sse(self, "error", {
-                    "type": "error",
-                    "error": {"type": "api_error", "message": message},
-                })
-                self.close_connection = True
+                self._send_anthropic_stream_error(message, text_block_started, text_block_stopped)
                 return
             except Exception as exc:
                 log(f"qwen bridge error model={model_config.model_id} error={exc}")
-                write_sse(self, "error", {
-                    "type": "error",
-                    "error": {"type": "api_error", "message": f"Qwen bridge error: {exc}"},
-                })
-                self.close_connection = True
+                self._send_anthropic_stream_error(f"Qwen bridge error: {exc}", text_block_started, text_block_stopped)
                 return
 
         try:
@@ -2588,10 +2659,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     elif kind == "usage" and parsed and isinstance(parsed.get("usage"), dict):
                         chat_stream_usage = parsed["usage"]
                     elif kind == "error":
-                        write_sse(self, "error", {
-                            "type": "error",
-                            "error": {"type": "api_error", "message": json.dumps(parsed, ensure_ascii=False)},
-                        })
+                        self._send_anthropic_stream_error(json.dumps(parsed, ensure_ascii=False), text_block_started, text_block_stopped)
                         return
                     elif kind == "done":
                         done_payload = parsed
@@ -2599,19 +2667,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
         except urllib.error.HTTPError as exc:
             message = upstream_error_message(exc)
             log(f"upstream http error model={model_config.model_id} status={exc.code} body={message[:500]}")
-            write_sse(self, "error", {
-                "type": "error",
-                "error": {"type": "api_error", "message": message},
-            })
-            self.close_connection = True
+            self._send_anthropic_stream_error(message, text_block_started, text_block_stopped)
             return
         except Exception as exc:
             log(f"upstream connection error model={model_config.model_id} format={model_config.api_format} error={exc}")
-            write_sse(self, "error", {
-                "type": "error",
-                "error": {"type": "api_error", "message": f"Upstream connection error: {exc}"},
-            })
-            self.close_connection = True
+            self._send_anthropic_stream_error(f"Upstream connection error: {exc}", text_block_started, text_block_stopped)
             return
 
         output_text = "".join(output_text_parts)
@@ -2720,6 +2780,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             text_parts.append(text)
                     elif kind in ("tool_call", "tool_call_delta", "tool_calls", "tool_calls_delta") and parsed:
                         merge_tool_call_payloads(tool_calls, parsed)
+                    elif kind == "usage" and parsed and isinstance(parsed.get("usage"), dict):
+                        chat_stream_usage = parsed["usage"]
                     elif kind == "error":
                         send_json(self, 502, {
                             "type": "error",
@@ -2759,7 +2821,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             "content": content,
             "stop_reason": stop_reason_from_done(done_payload, tool_calls),
             "stop_sequence": None,
-            "usage": {"input_tokens": 0, "output_tokens": max(1, len(text) // 4) if text else 0},
+            "usage": extract_anthropic_usage(done_payload, chat_stream_usage, text),
         })
 
     def log_message(self, format: str, *args: Any) -> None:
