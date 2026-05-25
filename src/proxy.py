@@ -2249,8 +2249,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         emit("response.created", {"response": {"id": request_id, "object": "response", "created_at": int(time.time()), "status": "in_progress", "model": model_config.model_id, "output": []}})
         emit("response.in_progress", {"response": {"id": request_id, "status": "in_progress"}})
-        qwen_stream_bridge = "qwen" in f"{model_config.model_id} {model_config.upstream_model}".lower()
-        if model_config.api_format == "chat_completions" and qwen_stream_bridge:
+        stream_bridge = model_config.stream_bridge
+        if model_config.api_format == "chat_completions" and stream_bridge:
             non_stream_payload = dict(upstream_payload)
             non_stream_payload["stream"] = False
             non_stream_payload.pop("stream_options", None)
@@ -2492,8 +2492,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
         done_payload: Optional[Dict[str, Any]] = None
         chat_stream_usage: Optional[Dict[str, Any]] = None
         thinking_state: Dict[str, Any] = {"in_thinking": False}
-        qwen_stream_bridge = "qwen" in f"{model_config.model_id} {model_config.upstream_model}".lower()
-        if model_config.api_format == "chat_completions" and qwen_stream_bridge:
+        stream_bridge = model_config.stream_bridge
+        if model_config.api_format == "chat_completions" and stream_bridge:
             non_stream_payload = dict(upstream_payload)
             non_stream_payload["stream"] = False
             non_stream_payload.pop("stream_options", None)
