@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Minimal Anthropic Messages -> OpenAI Responses streaming proxy for Claude Code.
 
@@ -971,7 +971,6 @@ def responses_current_user_modalities(body: Dict[str, Any]) -> set[str]:
                 return (content_modalities(item) | content_modalities(item.get("content"))) if role == "user" else set()
             if isinstance(item, dict) and item.get("role") == "user":
                 return set()
-    return set()
 
 
 def unsupported_modalities_message(model_config: ModelConfig, modalities: set[str]) -> str:
@@ -1830,7 +1829,6 @@ def stop_reason_from_done(parsed: Optional[Dict[str, Any]], tool_calls: List[Dic
                 return "tool_use"
     if status == "failed":
         return "end_turn"
-    return "end_turn"
 
 
 def compact_jsonish_outside_strings(value: str) -> str:
@@ -2133,8 +2131,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
             beta_header = self.headers.get("anthropic-beta", "")
             if "interleaved-thinking" in beta_header and "thinking" not in body:
                 body["thinking"] = {"type": "enabled", "budget_tokens": body.get("max_tokens", 8192)}
-            elif "prompt-caching" in beta_header:
-                body.setdefault("_beta_caching", True)
 
             config = current_config()
             stream = request_stream_enabled(body, config.default_stream)
@@ -2266,7 +2262,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
         thinking_state: Dict[str, Any] = {"in_thinking": False}
         chat_stream_usage: Optional[Dict[str, Any]] = None
         done_payload: Optional[Dict[str, Any]] = None
-        chat_stream_usage: Optional[Dict[str, Any]] = None
         sequence_number = 0
         send_sse_headers(self)
 
@@ -2569,7 +2564,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
         text_block_started = False
         text_block_stopped = False
         done_payload: Optional[Dict[str, Any]] = None
-        chat_stream_usage: Optional[Dict[str, Any]] = None
         thinking_state: Dict[str, Any] = {"in_thinking": False}
         stream_bridge = model_config.stream_bridge
         if model_config.api_format == "chat_completions" and stream_bridge:
