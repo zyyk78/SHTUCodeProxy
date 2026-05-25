@@ -1,4 +1,4 @@
-﻿# Python cache
+# Python cache
 __pycache__/
 *.py[cod]
 *$py.class
@@ -61,3 +61,52 @@ release/SHA256SUMS.txt
 
 # Cross-platform source bundles
 release/SHTUClaudeProxy-source-*.zip
+
+# === Additional cleanup rules ===
+
+# Release binaries and assets - use GitHub Releases only
+release/*.exe
+release/*.zip
+release/*.tar.xz
+release/*.tar.gz
+release/SHA256SUMS*.txt
+release/README-release-*.txt
+release/release-notes-*.md
+release/shtucodeproxyctl-*
+release/SHTUCodeProxy-*-linux-*
+release/SHTUClaudeProxy-*-linux-*
+release/SHTUClaudeProxy-windows-x64.zip
+release/article_images_*/
+release/verify-*/
+release/*.png
+
+# Linux build/test artifacts
+linux-artifacts/
+linux-artifacts-new/
+linux-repack/
+linux-headless-test-*/
+linux-release-*/
+
+# Temporary debug/probe scripts
+.tmp_*
+api_deep_probe.py
+api_matrix_probe.py
+claude_path_probe.py
+local_key_probe.py
+tools_probe.py
+
+# Build helper scripts (one-time use)
+build_diagram_prompt_pack_v425.py
+build_promotion_doc_v425.py
+
+# Documentation drafts (not source code)
+20260427_SHTUClaudeProxy*
+SHTUClaudeProxy_v*_多操作系统*.docx
+DESIGN.md
+
+# Screenshots and images
+ScreenShot_*.png
+微信图片_*.png
+
+# Remove the old conflicting rules below
+# (The comprehensive rules above replace them)
