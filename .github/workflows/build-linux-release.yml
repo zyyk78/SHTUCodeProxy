@@ -1,4 +1,4 @@
-name: Build Linux Release Asset
+﻿name: Build Linux Release Asset
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       tag:
         description: "Release tag to attach assets to"
         required: true
-        default: "v4.3.3"
+        default: "v4.4.2"
 
 permissions:
   contents: write
