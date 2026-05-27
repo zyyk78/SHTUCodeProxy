@@ -1921,7 +1921,7 @@ def chat_completion_json_to_responses(payload: Dict[str, Any], model: str, input
         raise ValueError(f"Upstream response missing choices: {json.dumps(payload, ensure_ascii=False)[:1000]}")
     choice = choices[0] if isinstance(choices[0], dict) else {}
     message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
-    output_text = message.get("content") or ""
+    output_text = message.get("content") or message.get("reasoning_content") or message.get("reasoning") or ""
     output_text, pseudo_tool_calls = parse_pseudo_function_calls(output_text, tools)
     output: List[Dict[str, Any]] = []
     if output_text:
@@ -2446,21 +2446,59 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     estimate_anthropic_input_tokens(body),
                     upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
                 )
-                log(f"codex response done model={model_config.model_id} non_stream=true{usage_cache_debug(payload.get('usage'))}")
-                send_json(self, 200, payload)
-                return
+                if payload.get("output"):
+                    log(f"codex response done model={model_config.model_id} non_stream=true{usage_cache_debug(payload.get('usage'))}")
+                    send_json(self, 200, payload)
+                    return
+                # Empty output - retry then fall back to streaming
+                for _attempt in range(2):
+                    log(f"WARNING empty responses non-stream model={model_config.model_id} attempt={_attempt+1}/2")
+                    time.sleep(0.5 * (_attempt + 1))
+                    try:
+                        with open_upstream(upstream_payload, auth_token, upstream_url, timeout, model_config.api_format) as retry_resp:
+                            raw_payload = retry_resp.read().decode("utf-8", errors="replace")
+                        _upstream_raw = json.loads(raw_payload)
+                        if isinstance(_upstream_raw, dict) and _upstream_raw.get("success") is False:
+                            upstream_msg = _upstream_raw.get("message", "") or json.dumps(_upstream_raw, ensure_ascii=False)[:200]
+                            raise ValueError(f"Upstream rejected: {upstream_msg}")
+                        payload = chat_completion_json_to_responses(
+                            _upstream_raw,
+                            model_config.model_id,
+                            estimate_anthropic_input_tokens(body),
+                            upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
+                        )
+                        if payload.get("output"):
+                            break
+                    except ValueError:
+                        raise
+                    except Exception as retry_exc:
+                        log(f"WARNING responses non-stream retry failed model={model_config.model_id} error={retry_exc}")
+                if payload.get("output"):
+                    log(f"codex response done model={model_config.model_id} non_stream=true{usage_cache_debug(payload.get('usage'))}")
+                    send_json(self, 200, payload)
+                    return
+                log(f"WARNING responses non-stream empty after retries, falling back to streaming model={model_config.model_id}")
+                # Fall through to streaming fallback below
             except urllib.error.HTTPError as exc:
                 send_json(self, 502, responses_error_payload(upstream_error_message(exc)))
                 return
-            except Exception as exc:
-                send_json(self, 502, responses_error_payload(f"Upstream response error: {exc}"))
+            except ValueError as exc:
+                send_json(self, 502, responses_error_payload(str(exc)))
                 return
+            except Exception as exc:
+                log(f"responses non-stream fallback model={model_config.model_id} error={exc}")
+                # Fall through to streaming fallback
         upstream_payload["stream"] = False
         upstream_payload.pop("stream_options", None)
         try:
             with open_upstream(upstream_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
                 raw_payload = response.read().decode("utf-8", errors="replace")
             payload = json.loads(raw_payload)
+            if isinstance(payload, dict) and payload.get("success") is False:
+                upstream_msg = payload.get("message", "") or payload.get("error", "") or json.dumps(payload, ensure_ascii=False)[:200]
+                log(f"upstream error model={model_config.model_id} message={upstream_msg}")
+                send_json(self, 502, responses_error_payload(f"Upstream rejected: {upstream_msg}"))
+                return
             log(f"codex response done model={model_config.model_id} non_stream=true{usage_cache_debug(payload.get('usage'))}")
             send_json(self, 200, payload)
             return
@@ -2591,19 +2629,40 @@ class ProxyHandler(BaseHTTPRequestHandler):
             non_stream_payload["stream"] = False
             non_stream_payload.pop("stream_options", None)
             try:
-                with open_upstream(non_stream_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
-                    raw_payload = response.read().decode("utf-8", errors="replace")
-                chat_json = json.loads(raw_payload)
-                if isinstance(chat_json.get("choices"), list):
-                    converted = chat_completion_json_to_responses(
-                        chat_json,
-                        model_config.model_id,
-                        estimate_value_tokens(body.get("messages")),
-                        non_stream_payload.get("tools") if isinstance(non_stream_payload.get("tools"), list) else None,
-                    )
+                for _bridge_attempt in range(3):
+                    with open_upstream(non_stream_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
+                        raw_payload = response.read().decode("utf-8", errors="replace")
+                    chat_json = json.loads(raw_payload)
+                    if isinstance(chat_json, dict) and chat_json.get("success") is False:
+                        upstream_msg = chat_json.get("message", "") or json.dumps(chat_json, ensure_ascii=False)[:200]
+                        raise ValueError(f"Upstream rejected: {upstream_msg}")
+                    if isinstance(chat_json.get("choices"), list):
+                        converted = chat_completion_json_to_responses(
+                            chat_json,
+                            model_config.model_id,
+                            estimate_value_tokens(body.get("messages")),
+                            non_stream_payload.get("tools") if isinstance(non_stream_payload.get("tools"), list) else None,
+                        )
+                        if converted.get("output"):
+                            break
+                        log(f"WARNING stream_bridge empty model={model_config.model_id} attempt={_bridge_attempt+1}/3")
+                        if _bridge_attempt < 2:
+                            time.sleep(0.5 * (_bridge_attempt + 1))
+                            continue
+                    else:
+                        converted = None
+                        break
+                    # Empty after all retries - break and fall through to real streaming
+                    if not converted.get("output"):
+                        log(f"WARNING stream_bridge empty after retries, falling back to real streaming model={model_config.model_id}")
+                        converted = None
+                        break
+                if converted and converted.get("output"):
                     anthropic_msg = responses_json_to_anthropic_message(converted, model_config)
                 else:
-                    anthropic_msg = responses_json_to_anthropic_message(chat_json, model_config)
+                    # Fall through to real streaming below
+                    raise ValueError("stream_bridge empty, use real streaming")
+                # The rest of the stream_bridge SSE emission
                 for block_index, block in enumerate(anthropic_msg.get("content", [])):
                     block_type = block.get("type", "text")
                     write_sse(self, "content_block_start", {
@@ -2639,6 +2698,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 log(f"qwen bridge http error model={model_config.model_id} status={exc.code} body={message[:500]}")
                 self._send_anthropic_stream_error(message, text_block_started, text_block_stopped)
                 return
+            except ValueError as exc:
+                if "stream_bridge empty" in str(exc):
+                    log(f"stream_bridge empty, falling back to real streaming model={model_config.model_id}")
+                    # Fall through to real streaming below - do NOT return
+                else:
+                    log(f"qwen bridge error model={model_config.model_id} error={exc}")
+                    self._send_anthropic_stream_error(f"Qwen bridge error: {exc}", text_block_started, text_block_stopped)
+                    return
             except Exception as exc:
                 log(f"qwen bridge error model={model_config.model_id} error={exc}")
                 self._send_anthropic_stream_error(f"Qwen bridge error: {exc}", text_block_started, text_block_stopped)
@@ -2780,7 +2847,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         break
                     log(f"WARNING empty non-stream response model={model_config.model_id} attempt={_attempt+1}/3")
                     if _attempt < 2:
-                        import time; time.sleep(0.5 * (_attempt + 1))
+                        time.sleep(0.5 * (_attempt + 1))
                         try:
                             with open_upstream(upstream_payload, auth_token, upstream_url, timeout, model_config.api_format) as retry_resp:
                                 raw_payload = retry_resp.read().decode("utf-8", errors="replace")
