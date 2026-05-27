@@ -2436,8 +2436,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
             try:
                 with open_upstream(upstream_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
                     raw_payload = response.read().decode("utf-8", errors="replace")
+                _upstream_raw = json.loads(raw_payload)
+                if isinstance(_upstream_raw, dict) and _upstream_raw.get("success") is False:
+                    upstream_msg = _upstream_raw.get("message", "") or _upstream_raw.get("error", "") or json.dumps(_upstream_raw, ensure_ascii=False)[:200]
+                    raise ValueError(f"Upstream rejected: {upstream_msg}")
                 payload = chat_completion_json_to_responses(
-                    json.loads(raw_payload),
+                    _upstream_raw,
                     model_config.model_id,
                     estimate_anthropic_input_tokens(body),
                     upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
@@ -2472,6 +2476,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         tool_calls: List[Dict[str, Any]] = []
         done_payload: Optional[Dict[str, Any]] = None
         thinking_state: Dict[str, Any] = {"in_thinking": False}
+        chat_stream_usage: Optional[Dict[str, Any]] = None
         try:
             with open_upstream(upstream_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
                 for event, data in iter_sse_lines(response):
@@ -2753,21 +2758,45 @@ class ProxyHandler(BaseHTTPRequestHandler):
             with open_upstream(upstream_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
                 raw_payload = response.read().decode("utf-8", errors="replace")
             payload = json.loads(raw_payload)
+            if isinstance(payload, dict) and payload.get("success") is False:
+                upstream_msg = payload.get("message", "") or payload.get("error", "") or json.dumps(payload, ensure_ascii=False)[:200]
+                log(f"upstream error model={model_config.model_id} message={upstream_msg}")
+                raise ValueError(f"Upstream rejected: {upstream_msg}")
             if isinstance(payload.get("output"), list):
+                log(f"DEBUG non_stream OUTPUT branch model={model_config.model_id} output_len={len(payload.get('output',[]))}")
                 log(f"response done model={model_config.model_id} non_stream=true{usage_cache_debug(payload.get('usage'))}")
                 send_json(self, 200, responses_json_to_anthropic_message(payload, model_config))
                 return
             if isinstance(payload.get("choices"), list):
-                converted = chat_completion_json_to_responses(
-                    payload,
-                    model_config.model_id,
-                    estimate_value_tokens(body.get("messages")),
-                    upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
-                )
-                log(f"response done model={model_config.model_id} non_stream=true{usage_cache_debug(converted.get('usage'))}")
-                send_json(self, 200, responses_json_to_anthropic_message(converted, model_config))
-                return
-            raise ValueError("Responses JSON missing output list")
+                log(f"DEBUG non_stream CHOICES branch model={model_config.model_id}")
+                for _attempt in range(3):
+                    converted = chat_completion_json_to_responses(
+                        payload,
+                        model_config.model_id,
+                        estimate_value_tokens(body.get("messages")),
+                        upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
+                    )
+                    if converted.get("output"):
+                        break
+                    log(f"WARNING empty non-stream response model={model_config.model_id} attempt={_attempt+1}/3")
+                    if _attempt < 2:
+                        import time; time.sleep(0.5 * (_attempt + 1))
+                        try:
+                            with open_upstream(upstream_payload, auth_token, upstream_url, timeout, model_config.api_format) as retry_resp:
+                                raw_payload = retry_resp.read().decode("utf-8", errors="replace")
+                            payload = json.loads(raw_payload)
+                        except Exception as retry_exc:
+                            log(f"WARNING non-stream retry failed model={model_config.model_id} error={retry_exc}")
+                if converted.get("output"):
+                    anthropic_msg = responses_json_to_anthropic_message(converted, model_config)
+                    log(f"DEBUG converted output={json.dumps(converted.get('output',[]), ensure_ascii=False)[:300]}")
+                    log(f"response done model={model_config.model_id} non_stream=true{usage_cache_debug(converted.get('usage'))}")
+                    send_json(self, 200, anthropic_msg)
+                    return
+                log(f"WARNING non-stream empty after retries, falling back to streaming model={model_config.model_id}")
+                # Fall through to streaming fallback below
+            else:
+                raise ValueError("Responses JSON missing output list")
         except urllib.error.HTTPError as exc:
             send_json(self, 502, responses_error_payload(upstream_error_message(exc)))
             return
@@ -2778,6 +2807,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         tool_calls: List[Dict[str, Any]] = []
         done_payload: Optional[Dict[str, Any]] = None
         thinking_state: Dict[str, Any] = {"in_thinking": False}
+        chat_stream_usage: Optional[Dict[str, Any]] = None
         try:
             with open_upstream(upstream_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
                 log(f"upstream connected model={model_config.model_id} format={model_config.api_format} status={getattr(response, 'status', 'unknown')}")
