@@ -595,6 +595,10 @@ def estimate_anthropic_input_tokens(body: Dict[str, Any]) -> int:
         total += 4
         total += estimate_text_tokens(str(message.get("role", "")))
         total += estimate_value_tokens(message.get("content"))
+    # Responses API: input can be a string, list of messages, or dict
+    input_val = body.get("input")
+    if input_val is not None and not body.get("messages"):
+        total += estimate_value_tokens(input_val)
     return max(1, total)
 
 
@@ -971,6 +975,7 @@ def responses_current_user_modalities(body: Dict[str, Any]) -> set[str]:
                 return (content_modalities(item) | content_modalities(item.get("content"))) if role == "user" else set()
             if isinstance(item, dict) and item.get("role") == "user":
                 return set()
+    return set()
 
 
 def unsupported_modalities_message(model_config: ModelConfig, modalities: set[str]) -> str:
@@ -2159,7 +2164,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
             upstream_payload = anthropic_messages_to_upstream(body_for_upstream, model_config, fallback_model, upstream_model, config.default_stream)
             upstream_payload = sanitized_upstream_payload_for_model(upstream_payload, model_config)
-            auto_cache_marks = apply_auto_cache_control(upstream_payload)
+            auto_cache_marks = apply_auto_cache_control(upstream_payload) if model_config.api_format == "chat_completions" else 0
             log(
                 "request "
                 f"model={body.get('model')} route={model_config.model_id} "
@@ -2198,9 +2203,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 message = unsupported_modalities_message(model_config, unsupported)
                 log(f"blocked unsupported Responses modalities model={model_config.model_id} modalities={','.join(sorted(unsupported))} stream={stream}")
                 if stream:
-                    self.send_responses_text_stream(model_config, message, estimate_value_tokens(body.get("input")))
+                    self.send_responses_text_stream(model_config, message, estimate_anthropic_input_tokens(body))
                 else:
-                    send_json(self, 200, responses_unsupported_modalities_payload(model_config, message, estimate_value_tokens(body.get("input"))))
+                    send_json(self, 200, responses_unsupported_modalities_payload(model_config, message, estimate_anthropic_input_tokens(body)))
                 return
             body_for_upstream = sanitized_responses_body_for_model(body, model_config)
             if not auth_token:
@@ -2208,7 +2213,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 return
             upstream_payload = responses_request_to_model_upstream(body_for_upstream, model_config, fallback_model, upstream_model, config.default_stream)
             upstream_payload = sanitized_upstream_payload_for_model(upstream_payload, model_config)
-            auto_cache_marks = apply_auto_cache_control(upstream_payload)
+            auto_cache_marks = apply_auto_cache_control(upstream_payload) if model_config.api_format == "chat_completions" else 0
             log(
                 "codex request "
                 f"model={body.get('model')} route={model_config.model_id} "
@@ -2265,6 +2270,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         chat_stream_usage: Optional[Dict[str, Any]] = None
         done_payload: Optional[Dict[str, Any]] = None
         sequence_number = 0
+        text_item_started = False
         send_sse_headers(self)
 
         def emit(event_type: str, payload: Dict[str, Any]) -> None:
@@ -2287,7 +2293,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 converted = chat_completion_json_to_responses(
                     json.loads(raw_payload),
                     model_config.model_id,
-                    estimate_value_tokens(body.get("input")),
+                    estimate_anthropic_input_tokens(body),
                     non_stream_payload.get("tools") if isinstance(non_stream_payload.get("tools"), list) else None,
                 )
                 output_text = responses_json_output_text(converted.get("output", []))
@@ -2333,6 +2339,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         text = filter_thinking_text_delta(parsed.get("text", ""), thinking_state)
                         if text:
                             output_text_parts.append(text)
+                            if not text_item_started:
+                                text_item_started = True
+                                emit("response.output_item.added", {"output_index": 0, "item": {"id": message_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})
+                                emit("response.content_part.added", {"item_id": message_id, "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": ""}})
+                            emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": text})
                     elif kind in ("tool_call", "tool_call_delta", "tool_calls", "tool_calls_delta") and parsed:
                         merge_tool_call_payloads(tool_calls, parsed)
                     elif kind == "usage" and parsed and isinstance(parsed.get("usage"), dict):
@@ -2377,7 +2388,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     converted = chat_completion_json_to_responses(
                         fallback_payload,
                         model_config.model_id,
-                        estimate_value_tokens(body.get("input")),
+                        estimate_anthropic_input_tokens(body),
                         retry_payload.get("tools") if isinstance(retry_payload.get("tools"), list) else None,
                     )
                     output_text = responses_json_output_text(converted.get("output", []))
@@ -2391,9 +2402,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
         output: List[Dict[str, Any]] = []
         if output_text:
-            emit("response.output_item.added", {"output_index": 0, "item": {"id": message_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})
-            emit("response.content_part.added", {"item_id": message_id, "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": ""}})
-            emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": output_text})
+            if not text_item_started:
+                emit("response.output_item.added", {"output_index": 0, "item": {"id": message_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})
+                emit("response.content_part.added", {"item_id": message_id, "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": ""}})
+                emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": output_text})
             emit("response.output_text.done", {"item_id": message_id, "output_index": 0, "content_index": 0, "text": output_text})
             text_item = {"id": message_id, "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": output_text}]}
             emit("response.content_part.done", {"item_id": message_id, "output_index": 0, "content_index": 0, "part": text_item["content"][0]})
@@ -2407,7 +2419,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             emit("response.function_call_arguments.done", {"item_id": item["id"], "output_index": output_index, "arguments": item["arguments"]})
             emit("response.output_item.done", {"output_index": output_index, "item": item})
             output.append(item)
-        completed = responses_completed_payload(request_id, model_config.model_id, output, estimate_value_tokens(body.get("input")), output_text)
+        completed = responses_completed_payload(request_id, model_config.model_id, output, estimate_anthropic_input_tokens(body), output_text)
         if done_payload and isinstance(done_payload.get("response"), dict):
             completed["usage"] = done_payload["response"].get("usage") or completed["usage"]
         elif chat_stream_usage:
@@ -2427,7 +2439,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 payload = chat_completion_json_to_responses(
                     json.loads(raw_payload),
                     model_config.model_id,
-                    estimate_value_tokens(body.get("input")),
+                    estimate_anthropic_input_tokens(body),
                     upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
                 )
                 log(f"codex response done model={model_config.model_id} non_stream=true{usage_cache_debug(payload.get('usage'))}")
@@ -2488,7 +2500,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             output.append({"id": response_output_item_id(), "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": output_text}]})
         for offset, tool_call in enumerate(tool_calls):
             output.append(codex_function_call_item(tool_call, offset))
-        payload = responses_completed_payload(response_id(), model_config.model_id, output, estimate_value_tokens(body.get("input")), output_text)
+        payload = responses_completed_payload(response_id(), model_config.model_id, output, estimate_anthropic_input_tokens(body), output_text)
         if done_payload and isinstance(done_payload.get("response"), dict):
             payload["usage"] = done_payload["response"].get("usage") or payload["usage"]
         send_json(self, 200, payload)
@@ -2566,6 +2578,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         text_block_started = False
         text_block_stopped = False
         done_payload: Optional[Dict[str, Any]] = None
+        chat_stream_usage: Optional[Dict[str, Any]] = None
         thinking_state: Dict[str, Any] = {"in_thinking": False}
         stream_bridge = model_config.stream_bridge
         if model_config.api_format == "chat_completions" and stream_bridge:
