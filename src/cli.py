@@ -61,7 +61,7 @@ def validate_codex_config(text: str) -> None:
     if "codex_hooks" in features:
         raise ValueError("Codex features.codex_hooks is deprecated; use features.hooks")
     windows = parsed.get("windows", {})
-    if os.name == "nt" and (not isinstance(windows, dict) or windows.get("sandbox") != "elevated"):
+    if os.name == "nt" and parsed.get("sandbox_mode") != "danger-full-access" and (not isinstance(windows, dict) or windows.get("sandbox") != "elevated"):
         raise ValueError("Codex windows.sandbox must be elevated on Windows")
     provider = parsed.get("model_providers", {}).get("shtu_proxy", {})
     if "env_key" in provider:
@@ -184,11 +184,16 @@ def codex_preserved_config_block(existing: str) -> str:
     if os.name == "nt":
         windows = parsed.get("windows") if isinstance(parsed.get("windows"), dict) else parse_flat_toml_section(existing, "windows")
         windows_values = dict(windows)
-        windows_values["sandbox"] = "elevated"
-        lines.append("")
-        lines.append("[windows]")
-        for key, value in windows_values.items():
-            lines.append(f"{key} = {format_toml_value(value)}")
+        # Only set elevated sandbox when using a sandboxed mode; danger-full-access means no sandbox
+        if parsed.get("sandbox_mode") != "danger-full-access":
+            windows_values["sandbox"] = "elevated"
+        elif "sandbox" in windows_values:
+            del windows_values["sandbox"]
+        if windows_values:
+            lines.append("")
+            lines.append("[windows]")
+            for key, value in windows_values.items():
+                lines.append(f"{key} = {format_toml_value(value)}")
     if unmanaged_sections:
         lines.append("")
         lines.append(unmanaged_sections)
