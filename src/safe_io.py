@@ -80,8 +80,8 @@ def powershell_copy_text(source: Path, target: Path) -> None:
         "param([string]$src,[string]$dst)\n"
         "$parent=Split-Path -Parent $dst\n"
         "if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }\n"
-        "$content=Get-Content -LiteralPath $src -Raw -Encoding UTF8\n"
-        "Set-Content -LiteralPath $dst -Value $content -Encoding UTF8 -Force\n",
+        "$content=[System.IO.File]::ReadAllText($src, [System.Text.Encoding]::UTF8)\n"
+        "[System.IO.File]::WriteAllText($dst, $content, (New-Object System.Text.UTF8Encoding $false))\n",
         encoding="utf-8",
     )
     result = subprocess.run(

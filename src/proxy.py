@@ -326,12 +326,23 @@ def current_config() -> AppConfig:
     return ACTIVE_CONFIG
 
 
+_MAX_BODY_LENGTH = 10 * 1024 * 1024  # 10 MB
+
+
 def read_json_body(handler: BaseHTTPRequestHandler) -> Dict[str, Any]:
     length = int(handler.headers.get("content-length", "0") or "0")
+    if length > _MAX_BODY_LENGTH:
+        send_json(handler, 413, {"type": "error", "error": {"type": "invalid_request_error", "message": f"Request body too large: {length} bytes (max {_MAX_BODY_LENGTH})"}})
+        raise _BodyTooLargeError()
     raw = handler.rfile.read(length) if length else b"{}"
     if not raw:
         return {}
     return json.loads(raw.decode("utf-8"))
+
+
+class _BodyTooLargeError(Exception):
+    """Raised by read_json_body when Content-Length exceeds the limit."""
+    pass
 
 
 def send_json(handler: BaseHTTPRequestHandler, status: int, payload: Dict[str, Any]) -> None:
@@ -2178,6 +2189,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.handle_streaming(body, upstream_payload, auth_token, upstream_url, timeout, model_config)
             else:
                 self.handle_non_streaming(body, upstream_payload, auth_token, upstream_url, timeout, model_config)
+        except _BodyTooLargeError:
+            return
         except Exception as exc:
             log(traceback.format_exc())
             if not self.wfile.closed:
@@ -2226,6 +2239,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.handle_responses_streaming(body, upstream_payload, auth_token, upstream_url, timeout, model_config)
             else:
                 self.handle_responses_non_streaming(body, upstream_payload, auth_token, upstream_url, timeout, model_config)
+        except _BodyTooLargeError:
+            return
         except Exception as exc:
             log(traceback.format_exc())
             if not self.wfile.closed:

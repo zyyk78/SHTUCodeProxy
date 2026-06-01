@@ -226,8 +226,8 @@ def seed_builtin_model_routes(config: AppConfig) -> AppConfig:
     existing = {model.model_id: model for model in config.models}
     routes = [
         ("GLM Chat", "glm-chat", DEFAULT_CHAT_COMPLETIONS_URL, "chat_completions"),
-        ("DeepSeek Chat", "deepseek-chat", f"{DEFAULT_CHAT_COMPLETIONS_URL}/chat/completions", "chat_completions"),
-        ("Qwen Instruct", "qwen-instruct", f"{DEFAULT_CHAT_COMPLETIONS_URL}/chat/completions", "chat_completions"),
+        ("DeepSeek Chat", "deepseek-chat", DEFAULT_CHAT_COMPLETIONS_URL, "chat_completions"),
+        ("Qwen Instruct", "qwen-instruct", DEFAULT_CHAT_COMPLETIONS_URL, "chat_completions"),
     ]
     for name, model_id, base_url, api_format in routes:
         if model_id in existing:
