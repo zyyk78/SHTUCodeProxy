@@ -85,12 +85,15 @@ def codex_root_config_block(config: AppConfig) -> str:
     sandbox_mode = getattr(config, "codex_sandbox_mode", DEFAULT_CODEX_SANDBOX_MODE)
     if sandbox_mode not in CODEX_SANDBOX_MODES:
         sandbox_mode = DEFAULT_CODEX_SANDBOX_MODE
-    return "\n".join([
+    lines = [
         f'model = "{codex_model}"',
         f'model_provider = "{provider}"',
         f'sandbox_mode = "{sandbox_mode}"',
-        "",
-    ])
+    ]
+    if os.name == "nt" and sandbox_mode != "danger-full-access":
+        lines += ["", "[windows]", 'sandbox = "elevated"']
+    lines.append("")
+    return "\n".join(lines)
 
 
 def codex_provider_profile_block(config: AppConfig) -> str:
@@ -784,3 +787,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
