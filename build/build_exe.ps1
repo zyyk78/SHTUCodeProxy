@@ -45,6 +45,9 @@ if (-not $OneFileOnly) {
     --add-data "VERSION;." `
     --add-data "docs\headless-config.example.json;." `
     --paths src `
+    --hidden-import PyQt5.QtCore `
+    --hidden-import PyQt5.QtGui `
+    --hidden-import PyQt5.QtWidgets `
     app.py
 
   Compress-Archive `
@@ -75,6 +78,9 @@ if (-not $OneDirOnly) {
     --add-data "VERSION;." `
     --add-data "docs\headless-config.example.json;." `
     --paths src `
+    --hidden-import PyQt5.QtCore `
+    --hidden-import PyQt5.QtGui `
+    --hidden-import PyQt5.QtWidgets `
     app.py
 
   Copy-Item `
@@ -158,3 +164,4 @@ if (-not $OneDirOnly -and -not $OneFileOnly) {
 
 Write-Host ""
 Write-Host "Build complete. Release files are in: $Root\release"
+
