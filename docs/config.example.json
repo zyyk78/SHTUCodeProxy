@@ -1,33 +1,60 @@
 {
   "host": "127.0.0.1",
   "port": 8082,
-  "default_model_id": "GPT-5.5",
-  "codex_model_id": "GPT-5.5",
+  "default_model_id": "glm-chat",
+  "codex_model_id": "glm-chat",
+  "codex_sandbox_mode": "workspace-write",
   "model_env": {
-    "ANTHROPIC_MODEL": "GPT-5.5",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "GPT-5.5",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "GPT-5.5",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "GPT-5.5",
-    "ANTHROPIC_REASONING_MODEL": "GPT-5.5"
+    "ANTHROPIC_MODEL": "glm-chat",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "glm-chat",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "glm-chat",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "glm-chat",
+    "ANTHROPIC_REASONING_MODEL": "glm-chat"
   },
   "timeout": 300,
   "models": [
     {
-      "name": "ShanghaiTech GPT-5.5 Responses",
-      "model_id": "GPT-5.5",
-      "base_url": "https://genaiapi.shanghaitech.edu.cn/api/v1/response",
-      "api_key": "",
-      "upstream_model": "GPT-5.5",
-      "api_format": "responses"
-    },
-    {
-      "name": "ShanghaiTech DeepSeek Pro Chat Completions",
+      "name": "DeepSeek Pro",
       "model_id": "deepseek-pro",
       "base_url": "https://genaiapi.shanghaitech.edu.cn/api/v1/start",
       "api_key": "",
       "upstream_model": "deepseek-pro",
+      "api_format": "chat_completions"
+    },
+    {
+      "name": "GPT-5.5",
+      "model_id": "GPT-5.5",
+      "base_url": "https://genaiapi.shanghaitech.edu.cn/api/v1/response",
+      "api_key": "",
+      "upstream_model": "GPT-5.5",
+      "api_format": "responses",
+      "supports_image": true
+    },
+    {
+      "name": "GLM Chat",
+      "model_id": "glm-chat",
+      "base_url": "https://genaiapi.shanghaitech.edu.cn/api/v1/start",
+      "api_key": "",
+      "upstream_model": "glm-chat",
+      "api_format": "chat_completions"
+    },
+    {
+      "name": "DeepSeek Chat",
+      "model_id": "deepseek-chat",
+      "base_url": "https://genaiapi.shanghaitech.edu.cn/api/v1/start",
+      "api_key": "",
+      "upstream_model": "deepseek-chat",
+      "api_format": "chat_completions"
+    },
+    {
+      "name": "Qwen Instruct",
+      "model_id": "qwen-instruct",
+      "base_url": "https://genaiapi.shanghaitech.edu.cn/api/v1/start",
+      "api_key": "",
+      "upstream_model": "qwen-instruct",
       "api_format": "chat_completions",
-      "stream_bridge": false
+      "supports_image": true,
+      "stream_bridge": true
     }
   ],
   "claude_path": "%APPDATA%\\npm\\claude.cmd",

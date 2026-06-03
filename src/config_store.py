@@ -228,8 +228,9 @@ def config_path() -> Path:
 
 
 def seed_builtin_model_routes(config: AppConfig) -> AppConfig:
-    existing = {model.model_id: model for model in config.models}
     routes = [
+        ("DeepSeek Pro", "deepseek-pro", DEFAULT_CHAT_COMPLETIONS_URL, "chat_completions"),
+        ("GPT-5.5", "GPT-5.5", DEFAULT_RESPONSES_URL, "responses"),
         ("GLM Chat", "glm-chat", DEFAULT_CHAT_COMPLETIONS_URL, "chat_completions"),
         ("DeepSeek Chat", "deepseek-chat", DEFAULT_CHAT_COMPLETIONS_URL, "chat_completions"),
         ("Qwen Instruct", "qwen-instruct", DEFAULT_CHAT_COMPLETIONS_URL, "chat_completions"),
