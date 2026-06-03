@@ -341,10 +341,27 @@ def read_json_body(handler: BaseHTTPRequestHandler) -> Dict[str, Any]:
     if length > _MAX_BODY_LENGTH:
         send_json(handler, 413, {"type": "error", "error": {"type": "invalid_request_error", "message": f"Request body too large: {length} bytes (max {_MAX_BODY_LENGTH})"}})
         raise _BodyTooLargeError()
-    raw = handler.rfile.read(length) if length else b"{}"
+    if length > 0:
+        raw = handler.rfile.read(length)
+    else:
+        # No Content-Length: read available data with timeout guard
+        chunks = []
+        try:
+            handler.rfile._sock.settimeout(5)
+            while True:
+                chunk = handler.rfile.read(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                if sum(len(c) for c in chunks) > _MAX_BODY_LENGTH:
+                    send_json(handler, 413, {"type": "error", "error": {"type": "invalid_request_error", "message": f"Request body too large (max {_MAX_BODY_LENGTH})"}})
+                    raise _BodyTooLargeError()
+        except (socket.timeout, OSError):
+            pass
+        raw = b"".join(chunks)
     if not raw:
         return {}
-    return json.loads(raw.decode("utf-8"))
+    return json.loads(raw.decode("utf-8", errors="replace"))
 
 
 class _BodyTooLargeError(Exception):
@@ -2098,6 +2115,7 @@ def extract_anthropic_usage(done_payload: Optional[Dict[str, Any]], chat_stream_
 
 class ProxyHandler(BaseHTTPRequestHandler):
     server_version = "shtu-claude-proxy/0.1"
+    protocol_version = "HTTP/1.1"
 
     def route_path(self) -> str:
         return urlparse(self.path).path.rstrip("/") or "/"
@@ -2967,6 +2985,7 @@ def main() -> None:
     global ACTIVE_CONFIG
     ACTIVE_CONFIG = config
     server = ThreadingHTTPServer((args.host, args.port), ProxyHandler)
+    server.daemon_threads = True
     log(f"Listening on http://{args.host}:{args.port}")
     log(f"Configured models: {', '.join(model.model_id for model in config.models)}")
     try:

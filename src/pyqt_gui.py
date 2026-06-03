@@ -126,7 +126,7 @@ from platform_utils import (
 IOS_QSS = """
 * {
   font-family: "Segoe UI", "SF Pro Text", "Arial";
-  font-size: 13px;
+  font-size: 10pt;
   color: #000000;
 }
 
@@ -142,7 +142,7 @@ QFrame#NavigationBar {
 }
 
 QLabel#WindowTitle {
-  font-size: 18px;
+  font-size: 14pt;
   font-weight: 700;
   color: #000000;
   background: transparent;
@@ -154,7 +154,7 @@ QLabel#WindowSubtitle, QLabel#Muted, QLabel#CardHint, QLabel#SectionHint {
 }
 
 QLabel#SectionTitle, QLabel#CardTitle, QLabel#StatusLabel {
-  font-size: 14px;
+  font-size: 11pt;
   font-weight: 700;
   color: #000000;
   background: transparent;
@@ -183,7 +183,7 @@ QGroupBox#GlassGroup::title {
   left: 16px;
   padding: 0px 8px;
   color: #000000;
-  font-size: 14px;
+  font-size: 11pt;
   font-weight: 700;
   background: #F2F2F7;
 }
@@ -202,7 +202,7 @@ QGroupBox#CompactGroup::title {
   left: 16px;
   padding: 0px 8px;
   color: #000000;
-  font-size: 13px;
+  font-size: 10pt;
   font-weight: 700;
   background: #F2F2F7;
 }
@@ -215,7 +215,7 @@ QFrame#AdvancedCard {
 
 QLabel#InlineSectionTitle {
   color: #000000;
-  font-size: 13px;
+  font-size: 10pt;
   font-weight: 700;
 }
 
@@ -395,7 +395,7 @@ QRadioButton {
   border: 1px solid rgba(255, 255, 255, 230);
   border-radius: 14px;
   padding: 15px 22px;
-  font-size: 17px;
+  font-size: 13pt;
   font-weight: 700;
   color: #000000;
 }
@@ -551,8 +551,16 @@ class IosProxyApp(QMainWindow):
         self.setWindowTitle(f"SHTUCodeProxy {APP_VERSION}")
         self.setObjectName("MainWindow")
         self.setWindowIcon(build_app_icon())
-        self.resize(1420, 960)
-        self.setMinimumSize(1220, 780)
+        # Size window to ~85% of available screen area, capped at reasonable max
+        screen = QApplication.primaryScreen()
+        if screen:
+            geo = screen.availableGeometry()
+            w = min(1420, int(geo.width() * 0.85))
+            h = min(960, int(geo.height() * 0.85))
+            self.resize(w, h)
+        else:
+            self.resize(1420, 960)
+        self.setMinimumSize(900, 600)
         self.setStyleSheet(IOS_QSS)
 
         self.config_data = load_config()
@@ -1471,6 +1479,11 @@ class IosProxyApp(QMainWindow):
 def run() -> int:
     install_diagnostics()
     set_windows_app_id()
+    # Enable HiDPI scaling before creating QApplication
+    if hasattr(Qt, "AA_EnableHighDpiScaling"):
+        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    if hasattr(Qt, "AA_UseHighDpiPixmaps"):
+        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
     instance_lock = file_lock("gui-instance", timeout=0.2)
     try:
