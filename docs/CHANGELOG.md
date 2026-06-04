@@ -1,3 +1,13 @@
+## v4.5.1 (2026-06-04)
+
+Chat Completions message format fixes for upstream compatibility.
+
+### Fixed
+
+- Batched consecutive `function_call` input items into a single assistant message with multiple `tool_calls`. Previously, each `function_call` produced a separate assistant message, violating OpenAI Chat Completions API conventions and causing consecutive assistant-role messages that some upstream APIs reject.
+- Added post-processing to merge consecutive `user` messages and consecutive text-only `assistant` messages in both `responses_request_to_chat_completions` and `anthropic_messages_to_chat_completions`. This prevents API rejections from strict upstreams when multiple `function_call_output` items or conversation turns produce consecutive same-role messages.
+- Removed 3 leftover DEBUG log lines in `handle_non_streaming`.
+
 ## v4.5.0 (2026-06-04)
 
 Codex `/compact` support, context window limits, and glm-chat compatibility fixes.
