@@ -42,7 +42,7 @@ Claude Desktop
 
 ### Windows
 
-1. 下载 `SHTUCodeProxy-v4.4.5-windows-x64.exe`
+1. 下载 `SHTUCodeProxy-v4.5.0-windows-x64.exe`
 2. 双击运行，在 GUI 中配置模型和 API Key
 3. 点击 **Start Proxy**
 4. 打开 Claude Code / Codex 即可使用
@@ -50,7 +50,7 @@ Claude Desktop
 ### Linux (GUI)
 
 ```bash
-tar xf SHTUCodeProxy-v4.4.5-linux-x86_64-python-launcher.tar.xz
+tar xf SHTUCodeProxy-v4.5.0-linux-x86_64-python-launcher.tar.xz
 cd SHTUCodeProxy
 ./SHTUCodeProxy
 ```
@@ -58,12 +58,12 @@ cd SHTUCodeProxy
 ### Linux (Headless CLI)
 
 ```bash
-unzip SHTUCodeProxy-v4.4.5-linux-x86_64-headless-cli.zip
-cd SHTUCodeProxy-v4.4.5-linux-x86_64-headless-cli
-chmod +x shtucodeproxyctl-v4.4.5-linux-x86_64
+unzip SHTUCodeProxy-v4.5.0-linux-x86_64-headless-cli.zip
+cd SHTUCodeProxy-v4.5.0-linux-x86_64-headless-cli
+chmod +x shtucodeproxyctl-v4.5.0-linux-x86_64
 nano config.json                          # 填入 API Key
-./shtucodeproxyctl-v4.4.5-linux-x86_64 apply-config config.json --write-claude --write-codex --start
-./shtucodeproxyctl-v4.4.5-linux-x86_64 status
+./shtucodeproxyctl-v4.5.0-linux-x86_64 apply-config config.json --write-claude --write-codex --start
+./shtucodeproxyctl-v4.5.0-linux-x86_64 status
 ```
 
 ## 配置说明

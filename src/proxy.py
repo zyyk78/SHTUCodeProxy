@@ -388,7 +388,13 @@ def send_sse_headers(handler: BaseHTTPRequestHandler) -> None:
     handler.end_headers()
 
 
-def write_sse(handler: BaseHTTPRequestHandler, event: str, data: Dict[str, Any]) -> None:
+def _response_is_sse(response) -> bool:
+    """Check if an upstream HTTP response is an SSE stream."""
+    content_type = response.headers.get("content-type", "")
+    return "text/event-stream" in content_type
+
+
+def write_sse(handler, event: str, data) -> None:
     payload = f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, separators=(',', ':'))}\n\n"
     handler.wfile.write(payload.encode("utf-8"))
     handler.wfile.flush()
@@ -1240,7 +1246,7 @@ def anthropic_message_to_chat_messages(message: Dict[str, Any]) -> List[Dict[str
                     "arguments": json_dumps_compact(tool_use.get("input", {})),
                 },
             })
-        return [{"role": "assistant", "content": text or None, "tool_calls": tool_calls}]
+        return [{"role": "assistant", "content": text or "", "tool_calls": tool_calls}]
     chat_content = anthropic_message_to_chat_content(message.get("content", ""))
     if isinstance(chat_content, list):
         return [{"role": role, "content": chat_content}]
@@ -1326,7 +1332,7 @@ def anthropic_messages_to_responses(body: Dict[str, Any], fallback_model: str, u
         payload["tools"] = tools
         payload["parallel_tool_calls"] = False
     tool_choice = anthropic_tool_choice_to_responses(body.get("tool_choice"))
-    if tool_choice is not None:
+    if tool_choice is not None and tools:
         payload["tool_choice"] = tool_choice
 
     if isinstance(body.get("thinking"), dict):
@@ -1368,8 +1374,23 @@ def anthropic_messages_to_chat_completions(body: Dict[str, Any], fallback_model:
     if tools:
         payload["tools"] = tools
     tool_choice = anthropic_tool_choice_to_openai(body.get("tool_choice"))
-    if tool_choice is not None:
+    if tool_choice is not None and tools:
         payload["tool_choice"] = tool_choice
+    # If messages contain tool_calls/tool role but payload has no tools definition,
+    # upstream APIs (e.g. glm-chat) require a tools field to accept tool_calls messages.
+    if "tools" not in payload:
+        message_tool_names: set = set()
+        for msg in messages:
+            for tc in msg.get("tool_calls", []):
+                func = tc.get("function", {})
+                name = func.get("name")
+                if name:
+                    message_tool_names.add(name)
+        if message_tool_names:
+            payload["tools"] = [
+                {"type": "function", "function": {"name": name, "description": f"Execute {name}", "parameters": {"type": "object", "properties": {}}}}
+                for name in sorted(message_tool_names)
+            ]
     return payload
 
 
@@ -1485,7 +1506,7 @@ def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: 
                     "type": "function",
                     "function": {"name": item.get("name") or "tool", "arguments": arguments},
                 }
-                messages.append({"role": "assistant", "content": None, "tool_calls": [pending_tool_calls[call_id]]})
+                messages.append({"role": "assistant", "content": "", "tool_calls": [pending_tool_calls[call_id]]})
                 continue
             if item_type in ("function_call_output", "tool_result"):
                 call_id = item.get("call_id") or item.get("id") or ""
@@ -1536,8 +1557,24 @@ def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: 
     tools = [tool for tool in (responses_tool_to_chat_tool(item) for item in body.get("tools", [])) if tool]
     if tools:
         payload["tools"] = tools
-    if body.get("tool_choice") is not None:
+    if body.get("tool_choice") is not None and tools:
         payload["tool_choice"] = responses_tool_choice_to_chat(body["tool_choice"])
+    # If messages contain tool_calls/tool role but payload has no tools definition,
+    # upstream APIs (e.g. glm-chat) require a tools field to accept tool_calls messages.
+    # Extract tool names from messages and generate minimal tool definitions.
+    if "tools" not in payload:
+        message_tool_names: set = set()
+        for msg in final_messages:
+            for tc in msg.get("tool_calls", []):
+                func = tc.get("function", {})
+                name = func.get("name")
+                if name:
+                    message_tool_names.add(name)
+        if message_tool_names:
+            payload["tools"] = [
+                {"type": "function", "function": {"name": name, "description": f"Execute {name}", "parameters": {"type": "object", "properties": {}}}}
+                for name in sorted(message_tool_names)
+            ]
     return payload
 
 
@@ -2156,6 +2193,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         route_path = self.route_path()
+        log("do_POST path={} raw_path={}".format(route_path, self.path))
         if route_path in ("/v1/messages/count_tokens", "/messages/count_tokens"):
             try:
                 body = read_json_body(self)
@@ -2163,6 +2201,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
             except Exception:
                 input_tokens = 1
             send_json(self, 200, {"input_tokens": input_tokens})
+            return
+        if route_path in ("/v1/responses/compact", "/responses/compact", "/v1/v1/responses/compact", "/codex/v1/responses/compact"):
+            self.handle_responses_compact()
             return
         if route_path in ("/v1/responses", "/responses"):
             self.handle_responses_post()
@@ -2230,7 +2271,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def handle_responses_post(self) -> None:
         try:
             body = read_json_body(self)
-            config = current_config()
             stream = request_stream_enabled(body, config.default_stream)
             model_config = config.find_model(body.get("model"))
             upstream_url = os.getenv("UPSTREAM_RESPONSES_URL") or model_config.base_url
@@ -2303,6 +2343,213 @@ class ProxyHandler(BaseHTTPRequestHandler):
         write_sse(self, "response.output_item.done", {"type": "response.output_item.done", "sequence_number": 7, "output_index": 0, "item": output[0]})
         write_sse(self, "response.completed", {"type": "response.completed", "sequence_number": 8, "response": responses_completed_payload(request_id, model_config.model_id, output, input_tokens, text)})
         self.close_connection = True
+
+    def handle_responses_compact(self) -> None:
+        """Proxy /responses/compact requests.
+
+        For api_format=responses, forward to upstream /compact endpoint.
+        For api_format=chat_completions, convert the compact request via
+        responses_request_to_chat_completions (preserving full conversation
+        context, tools, and instructions), send to upstream, then convert
+        the chat response back to Responses compact format.
+        """
+        try:
+            body = read_json_body(self)
+            log(f"codex compact request model={body.get('model')} keys={sorted(body.keys())}")
+            config = current_config()
+            model_config = config.find_model(body.get("model"))
+            if not model_config:
+                send_json(self, 400, responses_error_payload(f"Unknown model: {body.get('model')}"))
+                return
+            upstream_url = os.getenv("UPSTREAM_RESPONSES_URL") or model_config.base_url
+            fallback_model = os.getenv("UPSTREAM_MODEL") or model_config.model_id
+            upstream_model = os.getenv("UPSTREAM_MODEL") or model_config.upstream_model
+            auth_token = os.getenv("UPSTREAM_API_KEY") or model_config.api_key or ""
+            if not auth_token:
+                send_json(self, 500, responses_error_payload(f"No API key configured for model {model_config.model_id}", "authentication_error"))
+                return
+            timeout = int(os.getenv("UPSTREAM_TIMEOUT", str(config.timeout)))
+            stream = request_stream_enabled(body, config.default_stream)
+
+            if model_config.api_format == "responses":
+                # Upstream supports Responses API - forward compact directly
+                compact_url = upstream_url.rstrip("/")
+                if not compact_url.endswith("/compact"):
+                    compact_url += "/compact"
+                data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+                accept_header = "text/event-stream" if stream else "application/json"
+                headers = {
+                    "content-type": "application/json",
+                    "accept": accept_header,
+                    "authorization": f"Bearer {auth_token}",
+                }
+                request = urllib.request.Request(compact_url, data=data, headers=headers, method="POST")
+                try:
+                    with urllib.request.urlopen(request, timeout=timeout) as response:
+                        if stream and _response_is_sse(response):
+                            self._relay_responses_sse(body, response, model_config)
+                        else:
+                            raw = response.read().decode("utf-8", errors="replace")
+                            result = json.loads(raw)
+                            log(f"codex compact done model={model_config.model_id}")
+                            send_json(self, 200, result)
+                except urllib.error.HTTPError as exc:
+                    error_body = exc.read().decode("utf-8", errors="replace")
+                    log(f"codex compact upstream error model={model_config.model_id} status={exc.code}")
+                    self._handle_compact_via_chat(body, model_config, auth_token, upstream_url, timeout, stream, fallback_model, upstream_model, config)
+                except Exception as exc:
+                    log(f"codex compact upstream exception: {exc}")
+                    self._handle_compact_via_chat(body, model_config, auth_token, upstream_url, timeout, stream, fallback_model, upstream_model, config)
+            else:
+                # Upstream is chat_completions - convert and forward
+                self._handle_compact_via_chat(body, model_config, auth_token, upstream_url, timeout, stream, fallback_model, upstream_model, config)
+        except _BodyTooLargeError:
+            return
+        except Exception as exc:
+            log(traceback.format_exc())
+            if not self.wfile.closed:
+                try:
+                    send_json(self, 500, responses_error_payload(str(exc)))
+                except Exception:
+                    pass
+
+    def _handle_compact_via_chat(self, body: Dict[str, Any], model_config: ModelConfig, auth_token: str, upstream_url: str, timeout: int, stream: bool, fallback_model: str, upstream_model: Optional[str], config: Any) -> None:
+        """Handle compact request by converting to/from chat_completions format.
+
+        Always uses the chat_completions conversion pipeline regardless of the
+        provider's api_format, because:
+        - For api_format=chat_completions: natural conversion
+        - For api_format=responses (fallback from upstream /compact failure):
+          we cannot re-send to /responses (that's a normal request, not compact),
+          so we must convert to chat_completions, let the model process the
+          compaction, then convert back to Responses compact format.
+
+        Uses responses_request_to_chat_completions to preserve the full
+        conversation context, tools, and instructions.
+        """
+        try:
+            body_for_upstream = sanitized_responses_body_for_model(body, model_config)
+            # Always convert to chat_completions format for compact
+            upstream_payload = responses_request_to_chat_completions(body_for_upstream, fallback_model, upstream_model, config.default_stream)
+            upstream_payload = sanitized_upstream_payload_for_model(upstream_payload, model_config)
+            upstream_payload["stream"] = False
+            upstream_payload.pop("stream_options", None)
+
+            if stream and model_config.stream_bridge:
+                try:
+                    with open_upstream(upstream_payload, auth_token, upstream_url, timeout, "chat_completions") as response:
+                        raw_payload = response.read().decode("utf-8", errors="replace")
+                    _upstream_raw = json.loads(raw_payload)
+                    if isinstance(_upstream_raw, dict) and _upstream_raw.get("success") is False:
+                        raise ValueError(f"Upstream rejected: {_upstream_raw.get('message', '')}")
+                    converted = chat_completion_json_to_responses(
+                        _upstream_raw,
+                        model_config.model_id,
+                        estimate_anthropic_input_tokens(body),
+                        upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
+                    )
+                    output_text = responses_json_output_text(converted.get("output", []))
+                    self.send_responses_text_stream(model_config, output_text, estimate_anthropic_input_tokens(body))
+                    log(f"codex compact stream_bridge done model={model_config.model_id} chars={len(output_text)}")
+                    return
+                except Exception as exc:
+                    log(f"codex compact stream_bridge error: {exc}")
+
+            with open_upstream(upstream_payload, auth_token, upstream_url, timeout, "chat_completions") as response:
+                raw = response.read().decode("utf-8", errors="replace")
+            upstream_result = json.loads(raw)
+            if isinstance(upstream_result, dict) and upstream_result.get("success") is False:
+                raise ValueError(f"Upstream rejected: {upstream_result.get('message', '')}")
+
+            compact_response = chat_completion_json_to_responses(
+                upstream_result,
+                model_config.model_id,
+                estimate_anthropic_input_tokens(body),
+                upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
+            )
+            if not compact_response.get("output"):
+                raise ValueError("Empty compaction output from upstream")
+
+            log(f"codex compact chat done model={model_config.model_id} stream={stream}")
+            if stream:
+                request_id = compact_response.get("id", response_id())
+                seq = 0
+                def _emit(event_type: str, payload: dict) -> None:
+                    nonlocal seq
+                    payload.setdefault("type", event_type)
+                    payload.setdefault("sequence_number", seq)
+                    seq += 1
+                    write_sse(self, event_type, payload)
+                send_sse_headers(self)
+                _emit("response.created", {"response": {"id": request_id, "object": "response", "created_at": compact_response.get("created_at", int(time.time())), "status": "in_progress", "model": model_config.model_id, "output": []}})
+                _emit("response.in_progress", {"response": {"id": request_id, "status": "in_progress"}})
+                for output_index, item in enumerate(compact_response.get("output", [])):
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") == "message":
+                        content = item.get("content") if isinstance(item.get("content"), list) else []
+                        _emit("response.output_item.added", {"output_index": output_index, "item": dict(item, status="in_progress", content=[])})
+                        for content_index, part in enumerate(content):
+                            _emit("response.content_part.added", {"item_id": item.get("id"), "output_index": output_index, "content_index": content_index, "part": {"type": part.get("type", "output_text"), "text": ""}})
+                            if part.get("type") in ("output_text", "text") and part.get("text"):
+                                _emit("response.output_text.delta", {"item_id": item.get("id"), "output_index": output_index, "content_index": content_index, "delta": part.get("text", "")})
+                                _emit("response.output_text.done", {"item_id": item.get("id"), "output_index": output_index, "content_index": content_index, "text": part.get("text", "")})
+                            _emit("response.content_part.done", {"item_id": item.get("id"), "output_index": output_index, "content_index": content_index, "part": part})
+                        _emit("response.output_item.done", {"output_index": output_index, "item": item})
+                    elif item.get("type") == "function_call":
+                        _emit("response.output_item.added", {"output_index": output_index, "item": dict(item, status="in_progress")})
+                        _emit("response.function_call_arguments.delta", {"item_id": item.get("id"), "output_index": output_index, "delta": item.get("arguments", "{}")})
+                        _emit("response.function_call_arguments.done", {"item_id": item.get("id"), "output_index": output_index, "arguments": item.get("arguments", "{}")})
+                        _emit("response.output_item.done", {"output_index": output_index, "item": item})
+                _emit("response.completed", {"response": compact_response})
+                write_data_sse(self, "[DONE]")
+                self.close_connection = True
+            else:
+                send_json(self, 200, compact_response)
+        except Exception as exc:
+            log(f"codex compact chat error: {traceback.format_exc()}")
+            if stream:
+                request_id = response_id()
+                seq = 0
+                def _emit(event_type: str, payload: dict) -> None:
+                    nonlocal seq
+                    payload.setdefault("type", event_type)
+                    payload.setdefault("sequence_number", seq)
+                    seq += 1
+                    write_sse(self, event_type, payload)
+                send_sse_headers(self)
+                _emit("response.created", {"response": {"id": request_id, "object": "response", "created_at": int(time.time()), "status": "in_progress", "model": model_config.model_id, "output": []}})
+                _emit("response.failed", {"response": {"id": request_id, "status": "failed", "error": {"type": "server_error", "message": f"Compaction failed: {str(exc)[:200]}"}}})
+                write_data_sse(self, "[DONE]")
+                self.close_connection = True
+            else:
+                error_resp = {
+                    "id": response_id(),
+                    "object": "response",
+                    "created_at": int(time.time()),
+                    "model": model_config.model_id,
+                    "status": "failed",
+                    "error": {
+                        "type": "server_error",
+                        "message": f"Compaction failed: {str(exc)[:200]}",
+                    },
+                    "output": [],
+                }
+                send_json(self, 200, error_resp)
+
+    def _relay_responses_sse(self, body: Dict[str, Any], response: Any, model_config: ModelConfig) -> None:
+        """Relay upstream SSE stream for Responses compact API directly."""
+        try:
+            send_sse_headers(self)
+            for event, data in iter_sse_lines(response):
+                if event and data:
+                    write_sse(self, event, json.loads(data) if data.startswith("{") else data)
+            write_data_sse(self, "[DONE]")
+            self.close_connection = True
+            log(f"codex compact sse relay done model={model_config.model_id}")
+        except Exception as exc:
+            log(f"codex compact sse relay error: {exc}")
+            self.close_connection = True
 
     def handle_responses_streaming(self, body: Dict[str, Any], upstream_payload: Dict[str, Any], auth_token: str, upstream_url: str, timeout: int, model_config: ModelConfig) -> None:
         request_id = response_id()
@@ -2426,6 +2673,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 with open_upstream(retry_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
                     raw_payload = response.read().decode("utf-8", errors="replace")
                 fallback_payload = json.loads(raw_payload)
+                log(f"codex empty stream fallback model={model_config.model_id}")
                 output_text = response_text_from_upstream_json(fallback_payload)
                 if not output_text and isinstance(fallback_payload.get("choices"), list):
                     converted = chat_completion_json_to_responses(

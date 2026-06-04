@@ -7,7 +7,11 @@ from pathlib import Path
 # Ensure src/ is on the import path
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from pyqt_gui import run  # noqa: E402 - needed for PyInstaller detection
+# Lazy import to avoid loading PyQt5/sip in CLI/serve mode (sip crashes on Python 3.14)
+def _import_pyqt_gui():
+    from pyqt_gui import run
+    return run
+
 from cli import main  # noqa: E402 - needed for PyInstaller detection
 
 
@@ -30,4 +34,4 @@ if __name__ == "__main__":
         print("  SHTUCodeProxy start")
         raise SystemExit(2)
 
-    raise SystemExit(run())
+    raise SystemExit(_import_pyqt_gui()())

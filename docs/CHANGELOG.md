@@ -1,4 +1,29 @@
-﻿
+## v4.5.0 (2026-06-04)
+
+Codex `/compact` support, context window limits, and glm-chat compatibility fixes.
+
+### Added
+
+- Added Codex `/v1/responses/compact` endpoint handling: for `responses` format upstreams, forward compact requests directly; for `chat_completions` format upstreams, convert via `responses_request_to_chat_completions`, send to upstream, and convert the chat response back to Responses compact format.
+- Added `max_context_tokens` field to `ModelConfig` for per-model context window limits, persisted in config and exposed in `/v1/models` API response.
+- Added automatic `model_context_window` and `model_auto_compact_token_limit` (90% of context window) injection into Codex `config.toml` based on the selected model's `max_context_tokens`.
+- Added `CLAUDE_CODE_MAX_CONTEXT_TOKENS` environment variable injection in Claude CLI launch config based on the selected model.
+- Added seed of all 5 builtin model routes (deepseek-pro, GPT-5.5, glm-chat, deepseek-chat, qwen-instruct) with sensible defaults including context window sizes.
+- Added `_response_is_sse` helper for detecting SSE responses from upstream.
+- Added fallback tools generation in both `responses_request_to_chat_completions` and `anthropic_messages_to_chat_completions`: when messages contain `tool_calls` but the payload lacks a `tools` field, minimal tool definitions are generated from the tool names to satisfy upstream API requirements (especially glm-chat).
+
+### Fixed
+
+- **P0**: Fixed Codex `/compact` command failing with `stream disconnected before completion` when using glm-chat: the proxy now correctly routes compact requests and handles the chat_completions format conversion round-trip.
+- **P0**: Fixed `'NoneType' object is not iterable` BadRequestError from glm-chat: assistant messages with `tool_calls` now use `content: ""` instead of `content: None`, which glm-chat cannot parse.
+- **P1**: Fixed `tool_choice: auto` being sent when `tools` list is empty, causing upstream API rejection. `tool_choice` is now only included when `tools` is non-empty (both Anthropic and Responses conversion paths).
+- **P1**: Fixed `use_model` command not writing Claude settings or Codex config files after switching models, causing config drift until manual restart.
+
+### Changed
+
+- Updated `config.example.json` with all 5 builtin models, default model set to `glm-chat`, and `codex_sandbox_mode` preset.
+- GUI model editor now preserves `max_context_tokens` and `stream_bridge` fields that are not exposed in the GUI.
+
 ## v4.4.0 (2026-05-25)
 
 - Fix: apply_auto_cache_control now works for Responses format payloads (Codex)
@@ -9,8 +34,8 @@
 - Refactor: move source modules into src/ directory
 - Refactor: move build scripts to build/, docs to docs/, tests to tests/
 - Docs: add PROJECT-INDEX.md and CHANGELOG-v4.3.3.md
-# Changelog
 
+# Changelog
 ## v4.3.2 - 2026-05-20
 
 Model-level multimodal capability guard release.

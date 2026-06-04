@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import ctypes
@@ -88,11 +88,25 @@ def codex_root_config_block(config: AppConfig) -> str:
     sandbox_mode = getattr(config, "codex_sandbox_mode", DEFAULT_CODEX_SANDBOX_MODE)
     if sandbox_mode not in CODEX_SANDBOX_MODES:
         sandbox_mode = DEFAULT_CODEX_SANDBOX_MODE
+    approval_policy = getattr(config, "codex_approval_policy", "never")
+    personality = getattr(config, "codex_personality", "pragmatic")
+    reasoning_effort = getattr(config, "codex_reasoning_effort", "high")
     lines = [
         f'model = "{codex_model}"',
         f'model_provider = "{provider}"',
         f'sandbox_mode = "{sandbox_mode}"',
+        f'approval_policy = "{approval_policy}"',
+        'disable_response_storage = true',
+        f'personality = "{personality}"',
+        f'model_reasoning_effort = "{reasoning_effort}"',
     ]
+    # Context window from selected model
+    codex_model_id = getattr(config, "codex_model_id", "") or config.default_model_id
+    selected_model = config.find_model(codex_model_id)
+    if selected_model and getattr(selected_model, "max_context_tokens", 0) > 0:
+        ctx = selected_model.max_context_tokens
+        lines.append(f'model_context_window = {ctx}')
+        lines.append(f'model_auto_compact_token_limit = {int(ctx * 0.9)}')
     lines.append("")
     return "\n".join(lines)
 
@@ -131,6 +145,7 @@ def is_managed_codex_section(header_name: str) -> bool:
     return header_name in {
         "features",
         "windows",
+        "shell_environment_policy",
         "model_providers.shtu_proxy",
         "profiles.shtu_proxy",
         "model_providers.custom",
@@ -190,22 +205,26 @@ def codex_preserved_config_block(existing: str, config: AppConfig = None) -> str
         windows_values = dict(windows)
         # Only set elevated sandbox when using a sandboxed mode; danger-full-access means no sandbox
         effective_sandbox_mode = getattr(config, "codex_sandbox_mode", "") or parsed.get("sandbox_mode", "")
-        if effective_sandbox_mode != "danger-full-access":
-            windows_values["sandbox"] = "elevated"
-        elif "sandbox" in windows_values:
-            del windows_values["sandbox"]
+        # Windows always needs sandbox = "elevated" for process elevation,
+        # even with danger-full-access; otherwise Codex Desktop prompts to reconfigure.
+        windows_values["sandbox"] = "elevated"
+        if effective_sandbox_mode == "danger-full-access":
+            windows_values["sandbox_private_desktop"] = True
         # Update context window based on current model capacity
         codex_model_id = getattr(config, "codex_model_id", "") or config.default_model_id
         selected_model = config.find_model(codex_model_id)
-        if selected_model and getattr(selected_model, "max_context_tokens", 0) > 0:
-            ctx = selected_model.max_context_tokens
-            windows_values["model_context_window"] = ctx
-            windows_values["model_auto_compact_token_limit"] = int(ctx * 0.9)
+        # model_context_window and model_auto_compact_token_limit are now root-level fields
+        # Remove them from [windows] section if they were there before
+        windows_values.pop("model_context_window", None)
+        windows_values.pop("model_auto_compact_token_limit", None)
         if windows_values:
             lines.append("")
             lines.append("[windows]")
             for key, value in windows_values.items():
                 lines.append(f"{key} = {format_toml_value(value)}")
+        lines.append("")
+        lines.append("[shell_environment_policy]")
+        lines.append("inherit = \"all\"")
     if unmanaged_sections:
         lines.append("")
         lines.append(unmanaged_sections)
@@ -218,7 +237,7 @@ def codex_unmanaged_config_parts(existing: str) -> tuple[str, str]:
     root_lines: list[str] = []
     block: list[str] = []
     current_header = ""
-    managed_root_keys = {"model", "model_provider", "sandbox_mode"}
+    managed_root_keys = {"model", "model_provider", "sandbox_mode", "approval_policy", "disable_response_storage", "personality", "model_reasoning_effort", "model_context_window", "model_auto_compact_token_limit"}
     index = 0
     while index < len(lines):
         line = lines[index]

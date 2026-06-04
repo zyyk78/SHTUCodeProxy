@@ -20,7 +20,13 @@ DEFAULT_UPSTREAM_URL = DEFAULT_RESPONSES_URL
 DEFAULT_API_FORMAT = "responses"
 DEFAULT_MODEL_ID = "GPT-5.5"
 CODEX_SANDBOX_MODES = ("read-only", "workspace-write", "danger-full-access")
-DEFAULT_CODEX_SANDBOX_MODE = "workspace-write"
+DEFAULT_CODEX_SANDBOX_MODE = "danger-full-access"
+CODEX_APPROVAL_POLICIES = ("never", "on-failure", "untrusted", "on-request")
+DEFAULT_CODEX_APPROVAL_POLICY = "never"
+CODEX_PERSONALITIES = ("pragmatic", "friendly", "precise")
+DEFAULT_CODEX_PERSONALITY = "pragmatic"
+CODEX_REASONING_EFFORTS = ("low", "medium", "high")
+DEFAULT_CODEX_REASONING_EFFORT = "high"
 MODEL_ENV_KEYS = (
     "ANTHROPIC_MODEL",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL",
@@ -112,6 +118,9 @@ class AppConfig:
     default_model_id: str
     codex_model_id: str
     codex_sandbox_mode: str
+    codex_approval_policy: str
+    codex_personality: str
+    codex_reasoning_effort: str
     model_env: Dict[str, str]
     timeout: int
     claude_path: str
@@ -130,6 +139,9 @@ class AppConfig:
             default_model_id=DEFAULT_MODEL_ID,
             codex_model_id=DEFAULT_MODEL_ID,
             codex_sandbox_mode=DEFAULT_CODEX_SANDBOX_MODE,
+            codex_approval_policy=DEFAULT_CODEX_APPROVAL_POLICY,
+            codex_personality=DEFAULT_CODEX_PERSONALITY,
+            codex_reasoning_effort=DEFAULT_CODEX_REASONING_EFFORT,
             model_env={key: DEFAULT_MODEL_ID for key in MODEL_ENV_KEYS},
             timeout=300,
             claude_path=default_claude_path(),
@@ -162,6 +174,15 @@ class AppConfig:
         codex_sandbox_mode = str(data.get("codex_sandbox_mode") or default.codex_sandbox_mode).strip()
         if codex_sandbox_mode not in CODEX_SANDBOX_MODES:
             codex_sandbox_mode = default.codex_sandbox_mode
+        codex_approval_policy = str(data.get("codex_approval_policy") or default.codex_approval_policy).strip()
+        if codex_approval_policy not in CODEX_APPROVAL_POLICIES:
+            codex_approval_policy = default.codex_approval_policy
+        codex_personality = str(data.get("codex_personality") or default.codex_personality).strip()
+        if codex_personality not in CODEX_PERSONALITIES:
+            codex_personality = default.codex_personality
+        codex_reasoning_effort = str(data.get("codex_reasoning_effort") or default.codex_reasoning_effort).strip()
+        if codex_reasoning_effort not in CODEX_REASONING_EFFORTS:
+            codex_reasoning_effort = default.codex_reasoning_effort
         raw_model_env = data.get("model_env") if isinstance(data.get("model_env"), dict) else {}
         model_env = {
             key: str(raw_model_env.get(key) or default_model_id).strip()
@@ -173,6 +194,9 @@ class AppConfig:
             default_model_id=default_model_id,
             codex_model_id=codex_model_id,
             codex_sandbox_mode=codex_sandbox_mode,
+            codex_approval_policy=codex_approval_policy,
+            codex_personality=codex_personality,
+            codex_reasoning_effort=codex_reasoning_effort,
             model_env=model_env,
             timeout=int(data.get("timeout") or default.timeout),
             claude_path=portable_claude_path(str(data.get("claude_path") or default.claude_path)),
@@ -193,6 +217,9 @@ class AppConfig:
             "default_model_id": self.default_model_id,
             "codex_model_id": self.codex_model_id,
             "codex_sandbox_mode": self.codex_sandbox_mode,
+            "codex_approval_policy": self.codex_approval_policy,
+            "codex_personality": self.codex_personality,
+            "codex_reasoning_effort": self.codex_reasoning_effort,
             "model_env": self.model_env,
             "timeout": self.timeout,
             "claude_path": self.claude_path,
@@ -231,6 +258,7 @@ def config_path() -> Path:
 
 
 def seed_builtin_model_routes(config: AppConfig) -> AppConfig:
+    existing = {m.model_id for m in config.models}
     routes = [
         ("DeepSeek Pro", "deepseek-pro", DEFAULT_CHAT_COMPLETIONS_URL, "chat_completions"),
         ("GPT-5.5", "GPT-5.5", DEFAULT_RESPONSES_URL, "responses"),

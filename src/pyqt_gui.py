@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import datetime as _dt
 import json
@@ -99,6 +99,9 @@ from safe_io import file_lock
 from config_store import (
     AppConfig,
     CODEX_SANDBOX_MODES,
+    CODEX_APPROVAL_POLICIES,
+    CODEX_PERSONALITIES,
+    CODEX_REASONING_EFFORTS,
     DEFAULT_API_FORMAT,
     DEFAULT_CHAT_COMPLETIONS_URL,
     DEFAULT_RESPONSES_URL,
@@ -777,6 +780,21 @@ class IosProxyApp(QMainWindow):
         self.codex_sandbox_combo.setCurrentText(self.config_data.codex_sandbox_mode)
         self.codex_sandbox_combo.currentTextChanged.connect(self.on_codex_sandbox_changed)
         codex_box.addWidget(self.codex_sandbox_combo)
+        codex_box.addWidget(QLabel("Approval"))
+        self.codex_approval_combo = FocusWheelComboBox()
+        self.codex_approval_combo.addItems(CODEX_APPROVAL_POLICIES)
+        self.codex_approval_combo.setCurrentText(self.config_data.codex_approval_policy)
+        codex_box.addWidget(self.codex_approval_combo)
+        codex_box.addWidget(QLabel("Personality"))
+        self.codex_personality_combo = FocusWheelComboBox()
+        self.codex_personality_combo.addItems(CODEX_PERSONALITIES)
+        self.codex_personality_combo.setCurrentText(self.config_data.codex_personality)
+        codex_box.addWidget(self.codex_personality_combo)
+        codex_box.addWidget(QLabel("Reasoning"))
+        self.codex_reasoning_combo = FocusWheelComboBox()
+        self.codex_reasoning_combo.addItems(CODEX_REASONING_EFFORTS)
+        self.codex_reasoning_combo.setCurrentText(self.config_data.codex_reasoning_effort)
+        codex_box.addWidget(self.codex_reasoning_combo)
         codex_hint = QLabel("Writes Codex model, auth key, sandbox_mode, and hooks.")
         codex_hint.setObjectName("SectionHint")
         codex_box.addWidget(codex_hint)
@@ -1209,6 +1227,15 @@ class IosProxyApp(QMainWindow):
             self.danger_sandbox_confirmed = False
         self.config_data.codex_sandbox_mode = sandbox_mode if sandbox_mode in CODEX_SANDBOX_MODES else "workspace-write"
         self.codex_sandbox_combo.setCurrentText(self.config_data.codex_sandbox_mode)
+        approval = self.codex_approval_combo.currentText().strip()
+        self.config_data.codex_approval_policy = approval if approval in CODEX_APPROVAL_POLICIES else "never"
+        self.codex_approval_combo.setCurrentText(self.config_data.codex_approval_policy)
+        personality = self.codex_personality_combo.currentText().strip()
+        self.config_data.codex_personality = personality if personality in CODEX_PERSONALITIES else "pragmatic"
+        self.codex_personality_combo.setCurrentText(self.config_data.codex_personality)
+        reasoning = self.codex_reasoning_combo.currentText().strip()
+        self.config_data.codex_reasoning_effort = reasoning if reasoning in CODEX_REASONING_EFFORTS else "high"
+        self.codex_reasoning_combo.setCurrentText(self.config_data.codex_reasoning_effort)
         self.config_data.timeout = timeout
         self.config_data.claude_path = portable_claude_path(self.claude_path_edit.text().strip() or default_claude_path())
         self.config_data.claude_settings_path = portable_settings_path(self.claude_settings_path_edit.text().strip() or default_claude_settings_path())
