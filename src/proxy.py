@@ -1357,6 +1357,27 @@ def anthropic_messages_to_chat_completions(body: Dict[str, Any], fallback_model:
             continue
         messages.extend(anthropic_message_to_chat_messages(message))
 
+    # Merge consecutive same-role messages to comply with chat_completions API
+    merged: List[Dict[str, Any]] = []
+    for msg in messages:
+        if not merged:
+            merged.append(msg)
+            continue
+        prev = merged[-1]
+        prev_role = prev.get("role")
+        curr_role = msg.get("role")
+        if prev_role == curr_role and curr_role == "user":
+            prev_text = prev.get("content", "") if isinstance(prev.get("content"), str) else str(prev.get("content", ""))
+            curr_text = msg.get("content", "") if isinstance(msg.get("content"), str) else str(msg.get("content", ""))
+            prev["content"] = (prev_text + "\n\n" + curr_text).strip()
+        elif prev_role == curr_role and curr_role == "assistant" and not prev.get("tool_calls") and not msg.get("tool_calls"):
+            prev_text = prev.get("content", "") if isinstance(prev.get("content"), str) else ""
+            curr_text = msg.get("content", "") if isinstance(msg.get("content"), str) else ""
+            prev["content"] = (prev_text + "\n\n" + curr_text).strip()
+        else:
+            merged.append(msg)
+    messages = merged
+
     payload: Dict[str, Any] = {
         "model": upstream_model or os.getenv("UPSTREAM_MODEL") or body.get("model") or fallback_model,
         "messages": messages,
@@ -1491,8 +1512,14 @@ def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: 
         messages.append({"role": "user", "content": input_items})
     elif isinstance(input_items, list):
         pending_tool_calls: Dict[str, Dict[str, Any]] = {}
+        def _flush_pending() -> None:
+            nonlocal pending_tool_calls
+            if pending_tool_calls:
+                messages.append({"role": "assistant", "content": "", "tool_calls": list(pending_tool_calls.values())})
+                pending_tool_calls = {}
         for item in input_items:
             if not isinstance(item, dict):
+                _flush_pending()
                 messages.append({"role": "user", "content": str(item)})
                 continue
             item_type = item.get("type")
@@ -1506,9 +1533,9 @@ def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: 
                     "type": "function",
                     "function": {"name": item.get("name") or "tool", "arguments": arguments},
                 }
-                messages.append({"role": "assistant", "content": "", "tool_calls": [pending_tool_calls[call_id]]})
                 continue
             if item_type in ("function_call_output", "tool_result"):
+                _flush_pending()
                 call_id = item.get("call_id") or item.get("id") or ""
                 output_text = responses_content_to_text(item.get("output") or item.get("content"))
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": output_text})
@@ -1516,6 +1543,7 @@ def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: 
                     visible_text = anthropic_tool_results_visible_text([{"tool_use_id": call_id, "content": output_text}])
                     messages.append({"role": "user", "content": visible_text})
                 continue
+            _flush_pending()
             role = item.get("role") or ("assistant" if item_type == "message" else "user")
             message_role = "system" if role == "developer" else role
             message = {"role": message_role, "content": responses_content_to_chat_content(item.get("content"))}
@@ -1525,10 +1553,34 @@ def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: 
                 system_messages.append(message)
             else:
                 messages.append(message)
+        _flush_pending()
     else:
         messages.append({"role": "user", "content": ""})
 
-    final_messages = messages
+    # Merge consecutive same-role messages (except tool/system) to comply with
+    # chat_completions API requirements. Consecutive user messages from
+    # function_call_output visible text are a common source of this issue.
+    merged: List[Dict[str, Any]] = []
+    for msg in messages:
+        if not merged:
+            merged.append(msg)
+            continue
+        prev = merged[-1]
+        prev_role = prev.get("role")
+        curr_role = msg.get("role")
+        if prev_role == curr_role and curr_role == "user":
+            # Merge consecutive user messages
+            prev_text = prev.get("content", "") if isinstance(prev.get("content"), str) else str(prev.get("content", ""))
+            curr_text = msg.get("content", "") if isinstance(msg.get("content"), str) else str(msg.get("content", ""))
+            prev["content"] = (prev_text + "\n\n" + curr_text).strip()
+        elif prev_role == curr_role and curr_role == "assistant" and not prev.get("tool_calls") and not msg.get("tool_calls"):
+            # Merge consecutive text-only assistant messages
+            prev_text = prev.get("content", "") if isinstance(prev.get("content"), str) else ""
+            curr_text = msg.get("content", "") if isinstance(msg.get("content"), str) else ""
+            prev["content"] = (prev_text + "\n\n" + curr_text).strip()
+        else:
+            merged.append(msg)
+    final_messages = merged
     if system_messages:
         if any(has_cache_metadata(item.get("content")) for item in system_messages):
             system_content: Any = []
@@ -3123,12 +3175,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 log(f"upstream error model={model_config.model_id} message={upstream_msg}")
                 raise ValueError(f"Upstream rejected: {upstream_msg}")
             if isinstance(payload.get("output"), list):
-                log(f"DEBUG non_stream OUTPUT branch model={model_config.model_id} output_len={len(payload.get('output',[]))}")
                 log(f"response done model={model_config.model_id} non_stream=true{usage_cache_debug(payload.get('usage'))}")
                 send_json(self, 200, responses_json_to_anthropic_message(payload, model_config))
                 return
             if isinstance(payload.get("choices"), list):
-                log(f"DEBUG non_stream CHOICES branch model={model_config.model_id}")
                 for _attempt in range(3):
                     converted = chat_completion_json_to_responses(
                         payload,
@@ -3149,7 +3199,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             log(f"WARNING non-stream retry failed model={model_config.model_id} error={retry_exc}")
                 if converted.get("output"):
                     anthropic_msg = responses_json_to_anthropic_message(converted, model_config)
-                    log(f"DEBUG converted output={json.dumps(converted.get('output',[]), ensure_ascii=False)[:300]}")
                     log(f"response done model={model_config.model_id} non_stream=true{usage_cache_debug(converted.get('usage'))}")
                     send_json(self, 200, anthropic_msg)
                     return
