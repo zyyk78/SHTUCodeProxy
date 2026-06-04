@@ -19,7 +19,8 @@
       "base_url": "https://genaiapi.shanghaitech.edu.cn/api/v1/start",
       "api_key": "",
       "upstream_model": "deepseek-pro",
-      "api_format": "chat_completions"
+      "api_format": "chat_completions",
+      "max_context_tokens": 128000
     },
     {
       "name": "GPT-5.5",
@@ -28,7 +29,8 @@
       "api_key": "",
       "upstream_model": "GPT-5.5",
       "api_format": "responses",
-      "supports_image": true
+      "supports_image": true,
+      "max_context_tokens": 1048576
     },
     {
       "name": "GLM Chat",
@@ -36,7 +38,8 @@
       "base_url": "https://genaiapi.shanghaitech.edu.cn/api/v1/start",
       "api_key": "",
       "upstream_model": "glm-chat",
-      "api_format": "chat_completions"
+      "api_format": "chat_completions",
+      "max_context_tokens": 128000
     },
     {
       "name": "DeepSeek Chat",
@@ -44,7 +47,8 @@
       "base_url": "https://genaiapi.shanghaitech.edu.cn/api/v1/start",
       "api_key": "",
       "upstream_model": "deepseek-chat",
-      "api_format": "chat_completions"
+      "api_format": "chat_completions",
+      "max_context_tokens": 128000
     },
     {
       "name": "Qwen Instruct",
@@ -54,7 +58,8 @@
       "upstream_model": "qwen-instruct",
       "api_format": "chat_completions",
       "supports_image": true,
-      "stream_bridge": true
+      "stream_bridge": true,
+      "max_context_tokens": 131072
     }
   ],
   "claude_path": "%APPDATA%\\npm\\claude.cmd",

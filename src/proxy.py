@@ -2145,7 +2145,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
             config = current_config()
             models = []
             for mc in config.models:
-                models.append({"id": mc.model_id, "object": "model", "owned_by": "shtu-proxy"})
+                model_entry = {"id": mc.model_id, "object": "model", "owned_by": "shtu-proxy"}
+                if getattr(mc, "max_context_tokens", 0) > 0:
+                    model_entry["max_context_tokens"] = mc.max_context_tokens
+                models.append(model_entry)
             send_json(self, 200, {"object": "list", "data": models})
             return
 

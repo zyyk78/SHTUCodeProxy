@@ -24,6 +24,9 @@ def claude_env(config: AppConfig) -> Dict[str, str]:
         "ANTHROPIC_AUTH_TOKEN": "local-proxy",
     }
     env.update(config.model_env)
+    selected = config.find_model(config.default_model_id)
+    if selected and getattr(selected, "max_context_tokens", 0) > 0:
+        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(selected.max_context_tokens)
     return env
 
 
@@ -191,6 +194,13 @@ def codex_preserved_config_block(existing: str, config: AppConfig = None) -> str
             windows_values["sandbox"] = "elevated"
         elif "sandbox" in windows_values:
             del windows_values["sandbox"]
+        # Update context window based on current model capacity
+        codex_model_id = getattr(config, "codex_model_id", "") or config.default_model_id
+        selected_model = config.find_model(codex_model_id)
+        if selected_model and getattr(selected_model, "max_context_tokens", 0) > 0:
+            ctx = selected_model.max_context_tokens
+            windows_values["model_context_window"] = ctx
+            windows_values["model_auto_compact_token_limit"] = int(ctx * 0.9)
         if windows_values:
             lines.append("")
             lines.append("[windows]")

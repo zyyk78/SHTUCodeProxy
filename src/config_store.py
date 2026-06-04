@@ -63,6 +63,7 @@ class ModelConfig:
     supports_audio: bool = False
     supports_video: bool = False
     stream_bridge: bool = False
+    max_context_tokens: int = 0  # 0 means unknown/use global default
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ModelConfig":
@@ -80,6 +81,7 @@ class ModelConfig:
             supports_audio=bool_from_config(data.get("supports_audio"), False),
             supports_video=bool_from_config(data.get("supports_video"), False),
             stream_bridge=bool_from_config(data.get("stream_bridge"), "qwen" in f"{model_id} {upstream_model}".lower()),
+            max_context_tokens=int(data.get("max_context_tokens") or data.get("max_tokens") or 0),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -94,6 +96,7 @@ class ModelConfig:
             "supports_audio": self.supports_audio,
             "supports_video": self.supports_video,
             "stream_bridge": self.stream_bridge,
+            "max_context_tokens": self.max_context_tokens,
         }
 
 
