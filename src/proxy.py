@@ -2247,6 +2247,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 models.append(model_entry)
             send_json(self, 200, {"object": "list", "data": models})
             return
+        # GET /v1/responses/{response_id} - Codex may query stored responses
+        rp = self.route_path()
+        if rp.startswith("/v1/responses/") and rp.count("/") == 3:
+            response_id = rp.split("/v1/responses/")[-1]
+            send_json(self, 404, {"type": "error", "error": {"type": "not_found_error", "message": "Response not found (stateless proxy)"}})
+            return
 
         send_json(self, 404, {"type": "error", "error": {"type": "not_found_error", "message": "Not found"}})
 
@@ -2264,8 +2270,34 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if route_path in ("/v1/responses/compact", "/responses/compact", "/v1/v1/responses/compact", "/codex/v1/responses/compact"):
             self.handle_responses_compact()
             return
-        if route_path in ("/v1/responses", "/responses"):
+        if route_path in ("/v1/responses", "/responses", "/codex/v1/responses"):
             self.handle_responses_post()
+            return
+        # /v1/responses/{response_id}/input_items - Codex sends this for follow-up inputs
+        if route_path.endswith("/input_items") and "/responses/" in route_path:
+            # Stateless proxy: we cannot append to a completed upstream response.
+            # Return a minimal valid response so Codex does not break.
+            try:
+                body = read_json_body(self)
+            except Exception:
+                body = {}
+            send_json(self, 200, {
+                "id": route_path.split("/responses/")[-1].split("/")[0],
+                "object": "response",
+                "created_at": int(__import__("time").time()),
+                "status": "completed",
+                "model": "unknown",
+                "output": [],
+                "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            })
+            return
+        # /v1/responses/{response_id}/cancel - Codex sends this to cancel in-progress responses
+        if route_path.endswith("/cancel") and "/responses/" in route_path:
+            send_json(self, 200, {
+                "id": route_path.split("/responses/")[-1].split("/")[0],
+                "object": "response",
+                "status": "cancelled"
+            })
             return
         if route_path not in ("/v1/messages", "/messages"):
             send_json(self, 404, {"type": "error", "error": {"type": "not_found_error", "message": "Use /v1/messages or /v1/responses"}})

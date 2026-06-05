@@ -1,10 +1,14 @@
 ## v4.5.1 (2026-06-05)
 
-Fix Responses API tool_choice dict-to-string conversion bug.
+Fix Responses API tool_choice bug and add missing Codex route handlers.
 
 ### Fixed
 
 - **P0**: Fixed `tool_choice: {"type": "auto"}` from Responses API not converted to string `"auto"` for chat_completions upstream. The `responses_tool_choice_to_chat()` function now correctly maps `{"type": "auto"}` -> `"auto"`, `{"type": "none"}` -> `"none"`, `{"type": "required"}` -> `"required"`. Previously these dict values were passed through unchanged, causing 502 errors from glm-chat, deepseek-pro, deepseek-chat, and qwen-instruct upstreams when Codex sends tool_choice as a dict object. The Messages API path (`/v1/messages`) was not affected since `anthropic_tool_choice_to_openai()` already handled this correctly.
+- **P1**: Added `/codex/v1/responses` route alias. Codex Desktop sometimes sends requests to `/codex/v1/responses` instead of `/v1/responses`, causing 404 errors. Now both paths are supported.
+- **P1**: Added `POST /v1/responses/{id}/input_items` handler. Codex sends this to append follow-up inputs to an existing response. Since the proxy is stateless, returns a minimal completed response to prevent Codex from breaking.
+- **P1**: Added `POST /v1/responses/{id}/cancel` handler. Codex sends this to cancel in-progress responses. Returns a cancelled status response.
+- **P1**: Added `GET /v1/responses/{id}` handler. Returns proper 404 with "stateless proxy" message instead of generic error.
 - **P2**: Updated GLM default context window from 131072 to 200000 to match actual model capability.
 
 ## v4.5.0 (2026-06-05)
