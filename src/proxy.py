@@ -892,6 +892,8 @@ def sanitized_content_for_model(content: Any, model_config: ModelConfig) -> Any:
 
 def sanitized_anthropic_body_for_model(body: Dict[str, Any], model_config: ModelConfig) -> Dict[str, Any]:
     sanitized = dict(body)
+    # Strip "thinking" ? no upstream API supports it; causes 400 errors on non-Anthropic models
+    sanitized.pop("thinking", None)
     sanitized["tools"] = filter_tools_for_model(body.get("tools"), model_config)
     sanitized["tool_choice"] = sanitized_tool_choice_for_model(body.get("tool_choice"), body.get("tools"), model_config)
     removed_tool_ids: set[str] = set()
@@ -921,6 +923,8 @@ def sanitized_anthropic_body_for_model(body: Dict[str, Any], model_config: Model
 
 def sanitized_responses_body_for_model(body: Dict[str, Any], model_config: ModelConfig) -> Dict[str, Any]:
     sanitized = dict(body)
+    # Strip "thinking" ? no upstream API supports it; causes 400 errors on non-Anthropic models
+    sanitized.pop("thinking", None)
     sanitized["tools"] = filter_tools_for_model(body.get("tools"), model_config)
     sanitized["tool_choice"] = sanitized_tool_choice_for_model(body.get("tool_choice"), body.get("tools"), model_config)
     input_items = body.get("input")
@@ -1335,8 +1339,8 @@ def anthropic_messages_to_responses(body: Dict[str, Any], fallback_model: str, u
     if tool_choice is not None and tools:
         payload["tool_choice"] = tool_choice
 
-    if isinstance(body.get("thinking"), dict):
-        payload["thinking"] = body["thinking"]
+    # Strip "thinking" ? no upstream supports it; passing it causes 400 errors
+    # (e.g. GPT-5.5 returns "Unknown parameter: 'thinking'")
 
     return payload
 
@@ -2266,10 +2270,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         try:
             body = read_json_body(self)
-            # Read anthropic-beta header for feature detection
-            beta_header = self.headers.get("anthropic-beta", "")
-            if "interleaved-thinking" in beta_header and "thinking" not in body:
-                body["thinking"] = {"type": "enabled", "budget_tokens": body.get("max_tokens", 8192)}
+            # Note: "thinking" param is NOT injected even when anthropic-beta: interleaved-thinking
+            # header is present, because no upstream API supports it. It is stripped in sanitization.
 
             config = current_config()
             stream = request_stream_enabled(body, config.default_stream)
@@ -2303,6 +2305,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 f"upstream_model={upstream_payload.get('model')} "
                 f"format={model_config.api_format} "
                 f"messages={len(body.get('messages', []))} stream={stream} "
+                f"thinking_in_body={'thinking' in body} thinking_in_payload={'thinking' in upstream_payload} "
                 f"cache_control={has_cache_metadata(upstream_payload)} auto_cache_marks={auto_cache_marks}"
             )
             if stream:
@@ -2353,6 +2356,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 f"model={body.get('model')} route={model_config.model_id} "
                 f"upstream_model={upstream_payload.get('model')} "
                 f"format={model_config.api_format} stream={stream} "
+                f"thinking_in_body={'thinking' in body} thinking_in_payload={'thinking' in upstream_payload} "
                 f"cache_control={has_cache_metadata(upstream_payload)} auto_cache_marks={auto_cache_marks}"
             )
             if stream:
