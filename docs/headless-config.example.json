@@ -23,7 +23,8 @@
       "api_format": "responses",
       "supports_image": true,
       "supports_audio": false,
-      "supports_video": false
+      "supports_video": false,
+      "max_context_tokens": 1048576
     },
     {
       "name": "DeepSeek Pro",
@@ -35,7 +36,8 @@
       "supports_image": false,
       "supports_audio": false,
       "supports_video": false,
-      "stream_bridge": false
+      "stream_bridge": false,
+      "max_context_tokens": 131072
     },
     {
       "name": "DeepSeek Chat",
@@ -47,7 +49,8 @@
       "supports_image": false,
       "supports_audio": false,
       "supports_video": false,
-      "stream_bridge": false
+      "stream_bridge": false,
+      "max_context_tokens": 131072
     },
     {
       "name": "GLM Chat",
@@ -59,7 +62,8 @@
       "supports_image": false,
       "supports_audio": false,
       "supports_video": false,
-      "stream_bridge": false
+      "stream_bridge": false,
+      "max_context_tokens": 131072
     },
     {
       "name": "Qwen Instruct",
@@ -71,7 +75,8 @@
       "supports_image": true,
       "supports_audio": false,
       "supports_video": false,
-      "stream_bridge": true
+      "stream_bridge": true,
+      "max_context_tokens": 131072
     }
   ]
 }
