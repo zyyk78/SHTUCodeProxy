@@ -18,7 +18,7 @@ from proxy import ProxyHandler, ThreadingHTTPServer
 from safe_io import atomic_write_text, backup_existing_file, file_lock, restore_latest_backup, snapshot_original_file
 
 
-def claude_env(config: AppConfig) -> Dict[str, str]:
+def claude_env(config: AppConfig, existing_env: Dict[str, str] = None) -> Dict[str, str]:
     env = {
         "ANTHROPIC_BASE_URL": f"http://{config.host}:{config.port}",
         "ANTHROPIC_AUTH_TOKEN": "local-proxy",
@@ -26,7 +26,19 @@ def claude_env(config: AppConfig) -> Dict[str, str]:
     env.update(config.model_env)
     selected = config.find_model(config.default_model_id)
     if selected and getattr(selected, "max_context_tokens", 0) > 0:
-        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(selected.max_context_tokens)
+        proxy_tokens = str(selected.max_context_tokens)
+        # Preserve user-customized token limit only when model is unchanged
+        if existing_env and isinstance(existing_env, dict):
+            user_tokens = existing_env.get("CLAUDE_CODE_MAX_CONTEXT_TOKENS")
+            existing_model = existing_env.get("ANTHROPIC_MODEL", "")
+            current_model = config.model_env.get("ANTHROPIC_MODEL", config.default_model_id)
+            if user_tokens and user_tokens != proxy_tokens and existing_model == current_model:
+                # Same model, user has customized token limit - preserve it
+                env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = user_tokens
+            else:
+                env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = proxy_tokens
+        else:
+            env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = proxy_tokens
     return env
 
 
@@ -42,7 +54,7 @@ def write_claude_settings(config: AppConfig) -> Path:
             backup_existing_file(settings_path)
             existing = {}
     env = existing.get("env") if isinstance(existing.get("env"), dict) else {}
-    env.update(claude_env(config))
+    env.update(claude_env(config, env))
     existing["env"] = env
     existing["includeCoAuthoredBy"] = False
     payload = json.dumps(existing, ensure_ascii=False, indent=2)
@@ -82,7 +94,7 @@ def codex_config_block(config: AppConfig) -> str:
     return codex_root_config_block(config) + codex_provider_profile_block(config)
 
 
-def codex_root_config_block(config: AppConfig) -> str:
+def codex_root_config_block(config: AppConfig, existing_toml: str = "") -> str:
     provider = "shtu_proxy"
     codex_model = getattr(config, "codex_model_id", "") or config.default_model_id
     sandbox_mode = getattr(config, "codex_sandbox_mode", DEFAULT_CODEX_SANDBOX_MODE)
@@ -104,9 +116,31 @@ def codex_root_config_block(config: AppConfig) -> str:
     codex_model_id = getattr(config, "codex_model_id", "") or config.default_model_id
     selected_model = config.find_model(codex_model_id)
     if selected_model and getattr(selected_model, "max_context_tokens", 0) > 0:
-        ctx = selected_model.max_context_tokens
-        lines.append(f'model_context_window = {ctx}')
-        lines.append(f'model_auto_compact_token_limit = {int(ctx * 0.9)}')
+        proxy_ctx = selected_model.max_context_tokens
+        proxy_compact = int(proxy_ctx * 0.9)
+        # Preserve user-customized context values only when model is unchanged
+        user_ctx = None
+        user_compact = None
+        existing_model = None
+        if existing_toml.strip():
+            try:
+                parsed = tomllib.loads(existing_toml)
+                user_ctx = parsed.get("model_context_window")
+                user_compact = parsed.get("model_auto_compact_token_limit")
+                existing_model = parsed.get("model")
+            except tomllib.TOMLDecodeError:
+                pass
+        if (user_ctx is not None and existing_model == codex_model
+                and int(user_ctx) != proxy_ctx):
+            # Same model, user has customized context window - preserve both values
+            lines.append(f'model_context_window = {user_ctx}')
+            if user_compact is not None:
+                lines.append(f'model_auto_compact_token_limit = {user_compact}')
+            else:
+                lines.append(f'model_auto_compact_token_limit = {int(int(user_ctx) * 0.9)}')
+        else:
+            lines.append(f'model_context_window = {proxy_ctx}')
+            lines.append(f'model_auto_compact_token_limit = {proxy_compact}')
     lines.append("")
     return "\n".join(lines)
 
@@ -274,7 +308,7 @@ def write_codex_config(config: AppConfig) -> Path:
     existing = ""
     if target.exists():
         existing = target.read_text(encoding="utf-8-sig")
-    root = codex_root_config_block(config)
+    root = codex_root_config_block(config, existing)
     provider_profile = codex_provider_profile_block(config)
     preserved = codex_preserved_config_block(existing, config)
     combined = root + (preserved + "\n\n" if preserved else "") + provider_profile

@@ -24,7 +24,7 @@
       "supports_image": true,
       "supports_audio": false,
       "supports_video": false,
-      "max_context_tokens": 1048576
+      "max_context_tokens": 400000
     },
     {
       "name": "DeepSeek Pro",
@@ -37,7 +37,7 @@
       "supports_audio": false,
       "supports_video": false,
       "stream_bridge": false,
-      "max_context_tokens": 131072
+      "max_context_tokens": 128000
     },
     {
       "name": "DeepSeek Chat",
@@ -50,7 +50,7 @@
       "supports_audio": false,
       "supports_video": false,
       "stream_bridge": false,
-      "max_context_tokens": 131072
+      "max_context_tokens": 192000
     },
     {
       "name": "GLM Chat",

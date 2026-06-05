@@ -114,11 +114,11 @@ def default_supports_image(model_id: Any, upstream_model: Any = None) -> bool:
 def default_max_context_tokens(model_id: Any, upstream_model: Any = None) -> int:
     model_text = f"{model_id or ''} {upstream_model or ''}".lower()
     if "gpt-5.5" in model_text:
-        return 1048576
+        return 400000
     if "deepseek-chat" in model_text:
-        return 131072
+        return 192000
     if "deepseek-pro" in model_text:
-        return 131072
+        return 128000
     if "glm" in model_text:
         return 131072
     if "qwen" in model_text:
