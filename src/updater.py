@@ -181,6 +181,32 @@ def _fetch_via_gh_cli() -> Optional[dict]:
     return None
 
 
+
+def _fetch_latest_version_via_redirect() -> Optional[str]:
+    """Get the latest release version tag via GitHub releases redirect URL.
+
+    WHY: GitHub REST API has a 60 req/hr rate limit for anonymous requests.
+    The /releases/latest redirect URL is NOT rate-limited and always returns
+    the correct tag. This serves as a fallback when the API is blocked and
+    gh CLI is unavailable (which is the common case for end users).
+
+    Returns:
+        The latest version tag string (e.g. "4.6.7"), or None on failure.
+    """
+    url = f"https://github.com/{REPO_OWNER}/{REPO_NAME}/releases/latest"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "SHTUCodeProxy-Updater"})
+        resp = urllib.request.urlopen(req, timeout=15)
+        final_url = resp.geturl()
+        import re as _re
+        m = _re.search(r"tag/v?([\d.]+)", final_url)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return None
+
+
 def check_for_update(*, force: bool = False) -> CheckResult:
     """Check GitHub Releases for a newer version.
 
@@ -231,7 +257,28 @@ def check_for_update(*, force: bool = False) -> CheckResult:
             # Rate limited — try gh CLI as fallback
             release = _fetch_via_gh_cli()
             if release is None:
-                return CheckResult(has_update=False, error="GitHub API rate limited (try again later or run: gh auth login)", checked_at=now)
+                # WHY: gh CLI is unavailable for most end users. The GitHub
+                # /releases/latest redirect URL is NOT rate-limited, so we
+                # can get the latest version tag and construct download URLs.
+                remote_tag = _fetch_latest_version_via_redirect()
+                if remote_tag and is_newer(remote_tag, current_version()):
+                    asset_pattern = _platform_asset_pattern()
+                    if asset_pattern:
+                        asset_name = f"SHTUCodeProxy-v{remote_tag}{asset_pattern}"
+                        download_url = f"https://github.com/{REPO_OWNER}/{REPO_NAME}/releases/download/v{remote_tag}/{asset_name}"
+                        sha256_url = f"https://github.com/{REPO_OWNER}/{REPO_NAME}/releases/download/v{remote_tag}/SHA256SUMS.txt"
+                        info = UpdateInfo(
+                            version=remote_tag,
+                            html_url=f"https://github.com/{REPO_OWNER}/{REPO_NAME}/releases/tag/v{remote_tag}",
+                            body="",
+                            download_url=download_url,
+                            sha256_url=sha256_url,
+                            asset_name=asset_name,
+                        )
+                        result = CheckResult(has_update=True, update_info=info, checked_at=now)
+                        _write_check_cache(result)
+                        return result
+                return CheckResult(has_update=False, error="GitHub API rate limited and redirect fallback failed", checked_at=now)
         else:
             return CheckResult(has_update=False, error=f"GitHub API HTTP {e.code}", checked_at=now)
     except urllib.error.URLError as e:
