@@ -828,13 +828,17 @@ winget install --id GitHub.cli
   - `shtucodeproxyctl-v{版本}-linux-x86_64`（单文件 CLI）
 - 所有产物自动上传到对应 tag 的 Release
 
-### 触发步骤
+### 触发步骤（gh CLI）
 
-1. 在浏览器打开 https://github.com/saberjack/SHTUCodeProxy/actions
-2. 选择 "Build Linux Release Asset" 工作流
-3. 点击 "Run workflow"
-4. 输入 tag（如 `v4.6.2`）和 ref（默认 `main`）
-5. 等待构建完成，产物自动附加到 Release
+```powershell
+Set-Location "C:\上海科技大学\脚本\shutucodeproxy"
+& "C:\Program Files\GitHub CLI\gh.exe" workflow run "Build Linux Release Asset" -f tag=v{版本}
+# 命令返回 Actions 运行 URL，可查看构建状态
+```
+
+也可浏览器手动触发：https://github.com/saberjack/SHTUCodeProxy/actions → "Build Linux Release Asset" → Run workflow → 输入 tag
+
+> **注意**：`-f tag=` 必须显式指定，该输入无默认值。`--ref` 参数仅控制 checkout 的 Git 引用，不等于 tag 输入。
 
 ### Windows 构建（可选 CI）
 
