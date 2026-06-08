@@ -1,3 +1,23 @@
+## v4.6.6 (2026-06-08)
+
+Claude Code /model switching fix for qwen-instruct and minimax.
+
+### Fixed
+
+- **Fixed empty responses from qwen-instruct/minimax when switching models via Claude Code `/model` command**: Claude Code sends `system` messages after `user` messages (e.g. skill hints). Many Chat Completions upstream APIs (notably qwen-instruct) silently return empty responses when a `system` message appears mid-conversation. The proxy now merges post-user `system` messages into the first `system` message, preserving their content while maintaining API compatibility.
+
+- **Fixed `thinking`/`redacted_thinking` blocks leaking as JSON text in upstream payloads**: These Anthropic-specific content block types were serialized as raw JSON strings and forwarded to upstream APIs, causing garbled input. Now skipped in `normalize_content_part`, `split_anthropic_content`, and `anthropic_content_to_text`.
+
+- **Fixed `cache_control` fields causing empty streams from GPT-5.5 Responses API**: The Anthropic-specific `cache_control` field was forwarded to all upstream APIs. The Responses API silently returns empty streams when encountering unknown fields. Added recursive `_strip_cache_control()` to remove these from all payloads.
+
+## v4.6.5 (2026-06-08)
+
+Claude Code /model switching initial fix (incomplete).
+
+### Fixed
+
+- Initial attempt to fix Claude Code `/model` switching for non-Claude models (GPT-5.5, qwen-instruct, minimax). Resolved thinking block and cache_control issues, but the core qwen-instruct/minimax empty response problem (post-user system messages) was not yet identified.
+
 ## v4.6.4 (2026-06-08)
 
 Chat Completions HTTP 500 fix release.

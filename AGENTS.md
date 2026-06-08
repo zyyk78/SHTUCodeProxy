@@ -2,7 +2,7 @@
 
 > 项目目录: C:\上海科技大学\脚本\shutucodeproxy
 > GitHub: https://github.com/saberjack/SHTUCodeProxy
-> 当前版本: v4.6.2
+> 当前版本: v4.6.6
 
 ## 项目概述
 

@@ -407,6 +407,10 @@ def write_data_sse(handler: BaseHTTPRequestHandler, data: str) -> None:
 
 def normalize_content_part(part: Dict[str, Any]) -> Any:
     part_type = part.get("type")
+    # WHY: thinking/redacted_thinking are Anthropic-only types that must not
+    # be forwarded to the Responses API as serialized JSON text.
+    if part_type in ("thinking", "redacted_thinking"):
+        return {"type": "input_text", "text": ""}
     if part_type in ("text", "input_text"):
         return copy_cache_metadata(part, {"type": "input_text", "text": part.get("text", "")})
     if part_type in ("input_image", "input_file"):
@@ -585,6 +589,8 @@ def anthropic_content_to_text(content: Any) -> str:
             text_parts.append(f"[tool_result id={part.get('tool_use_id', '')}] {part.get('content', '')}")
         elif part_type == "image":
             text_parts.append("[image]")
+        elif part_type in ("thinking", "redacted_thinking"):
+            pass
         else:
             text_parts.append(json.dumps(part, ensure_ascii=False))
     return "\n".join(part for part in text_parts if part)
@@ -1007,8 +1013,22 @@ def sanitized_upstream_value_for_model(value: Any, model_config: ModelConfig) ->
     return value
 
 
+def _strip_cache_control(value: Any) -> Any:
+    """Recursively remove cache_control keys (not supported by Responses API)."""
+    if isinstance(value, dict):
+        return {k: _strip_cache_control(v) for k, v in value.items() if k != "cache_control"}
+    if isinstance(value, list):
+        return [_strip_cache_control(item) for item in value]
+    return value
+
+
 def sanitized_upstream_payload_for_model(payload: Dict[str, Any], model_config: ModelConfig) -> Dict[str, Any]:
-    return sanitized_upstream_value_for_model(payload, model_config) if isinstance(payload, dict) else payload
+    result = sanitized_upstream_value_for_model(payload, model_config) if isinstance(payload, dict) else payload
+    # WHY: cache_control is Anthropic-specific; no upstream API supports it.
+    # Leaving it in causes empty streams (GPT-5.5 responses) or errors.
+    if isinstance(result, dict):
+        result = _strip_cache_control(result)
+    return result
 
 
 def anthropic_current_user_modalities(body: Dict[str, Any]) -> set[str]:
@@ -1225,6 +1245,10 @@ def split_anthropic_content(content: Any) -> Tuple[str, List[Dict[str, Any]], Li
             tool_results.append(part)
         elif part_type == "image":
             text_parts.append("[image]")
+        elif part_type in ("thinking", "redacted_thinking"):
+            # WHY: Skip Anthropic thinking blocks - they must not be forwarded
+            # as text to upstream APIs (causes empty responses from GPT-5.5 etc.)
+            pass
         else:
             text_parts.append(json.dumps(part, ensure_ascii=False))
     return "\n".join(part for part in text_parts if part), tool_uses, tool_results
@@ -1377,13 +1401,36 @@ def anthropic_messages_to_chat_completions(body: Dict[str, Any], fallback_model:
 
     # Merge consecutive same-role messages to comply with chat_completions API
     merged: List[Dict[str, Any]] = []
+    # WHY: Some upstream APIs (e.g. qwen-instruct) return empty responses when a
+    # system message appears after user/assistant messages. Track the first system
+    # message index so we can merge later system messages back into it.
+    first_system_idx: Optional[int] = None
+    has_non_system: bool = False
     for msg in messages:
         if not merged:
             merged.append(msg)
+            if msg.get("role") == "system":
+                first_system_idx = 0
             continue
         prev = merged[-1]
         prev_role = prev.get("role")
         curr_role = msg.get("role")
+        if curr_role != "system":
+            has_non_system = True
+        # WHY: If a system message appears after user/assistant messages, merge it
+        # into the first system message instead of keeping it as a separate message.
+        # Many chat_completions APIs reject or silently ignore mid-conversation system messages.
+        if curr_role == "system" and has_non_system and first_system_idx is not None:
+            sys_msg = merged[first_system_idx]
+            sys_text = sys_msg.get("content", "") if isinstance(sys_msg.get("content"), str) else str(sys_msg.get("content", ""))
+            curr_text = msg.get("content", "") if isinstance(msg.get("content"), str) else str(msg.get("content", ""))
+            sys_msg["content"] = (sys_text + "\n\n" + curr_text).strip()
+            continue
+        if curr_role == "system" and has_non_system and first_system_idx is None:
+            # No prior system message; convert to user role
+            msg = dict(msg)
+            msg["role"] = "user"
+            curr_role = "user"
         if prev_role == curr_role and curr_role == "user":
             prev_text = prev.get("content", "") if isinstance(prev.get("content"), str) else str(prev.get("content", ""))
             curr_text = msg.get("content", "") if isinstance(msg.get("content"), str) else str(msg.get("content", ""))
@@ -3368,6 +3415,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 log(f"upstream connected model={model_config.model_id} format={model_config.api_format} status={getattr(response, 'status', 'unknown')}")
                 for event, data in iter_sse_lines(response):
                     kind, parsed = extract_text_delta(event, data)
+
                     if kind == "delta":
                         raw_text = parsed.get("text", "") if parsed else ""
                         text = filter_thinking_text_delta(raw_text, thinking_state)
