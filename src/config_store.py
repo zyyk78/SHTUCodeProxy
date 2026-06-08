@@ -175,6 +175,10 @@ class AppConfig:
     codex_auth_path: str
     default_stream: bool
     diagnostic_logging: bool
+    update_check_enabled: bool
+    update_check_interval_hours: int
+    update_include_prerelease: bool
+    update_auto_download: bool
     models: List[ModelConfig]
 
     @classmethod
@@ -196,6 +200,10 @@ class AppConfig:
             codex_auth_path=default_codex_auth_path(),
             default_stream=True,
             diagnostic_logging=False,
+            update_check_enabled=True,
+            update_check_interval_hours=24,
+            update_include_prerelease=False,
+            update_auto_download=False,
             models=[
                 ModelConfig(
                     name="Default GPT-5.5",
@@ -251,6 +259,10 @@ class AppConfig:
             codex_auth_path=portable_codex_auth_path(str(data.get("codex_auth_path") or default.codex_auth_path)),
             default_stream=bool(data.get("default_stream", default.default_stream)),
             diagnostic_logging=bool(data.get("diagnostic_logging", default.diagnostic_logging)),
+            update_check_enabled=bool(data.get("update_check_enabled", default.update_check_enabled)),
+            update_check_interval_hours=int(data.get("update_check_interval_hours", default.update_check_interval_hours)),
+            update_include_prerelease=bool(data.get("update_include_prerelease", default.update_include_prerelease)),
+            update_auto_download=bool(data.get("update_auto_download", default.update_auto_download)),
             models=models or default.models,
         )
         result._loaded_at = time.time()
@@ -274,6 +286,10 @@ class AppConfig:
             "codex_auth_path": self.codex_auth_path,
             "default_stream": self.default_stream,
             "diagnostic_logging": self.diagnostic_logging,
+            "update_check_enabled": self.update_check_enabled,
+            "update_check_interval_hours": self.update_check_interval_hours,
+            "update_include_prerelease": self.update_include_prerelease,
+            "update_auto_download": self.update_auto_download,
             "models": [model.to_dict() for model in self.models],
         }
 

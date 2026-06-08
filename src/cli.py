@@ -17,6 +17,8 @@ from platform_utils import app_dir, launch_script_filename, launch_script_text
 from proxy import ProxyHandler, ThreadingHTTPServer
 from safe_io import atomic_write_text, backup_existing_file, file_lock, restore_latest_backup, snapshot_original_file
 
+from updater import check_for_update, download_update, current_version
+
 
 def claude_env(config: AppConfig, existing_env: Dict[str, str] = None) -> Dict[str, str]:
     env = {
@@ -805,6 +807,12 @@ def main(argv: list[str] | None = None) -> int:
     subparsers.add_parser("stop", help="Stop proxy server started by CLI start")
     subparsers.add_parser("status", help="Show background proxy and port status")
 
+    check_update_parser = subparsers.add_parser("check-update", help="Check for a newer version on GitHub")
+    check_update_parser.add_argument("--force", action="store_true", help="Force check, bypassing cooldown timer")
+    update_parser = subparsers.add_parser("update", help="Download and install the latest version")
+    update_parser.add_argument("--force", action="store_true", help="Force check, bypassing cooldown timer")
+    update_parser.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt")
+
     args = parser.parse_args(argv)
     config = load_config()
 
@@ -848,6 +856,64 @@ def main(argv: list[str] | None = None) -> int:
         stop_background()
     elif args.command == "status":
         show_status(config)
+    elif args.command == "check-update":
+        result = check_for_update(force=args.force)
+        if result.is_error:
+            print(f"Update check failed: {result.error}")
+        elif result.has_update:
+            info = result.update_info
+            print(f"Update available: {info.display_version} (current: v{current_version()})")
+            print(f"Release page: {info.html_url}")
+            if info.body:
+                # Show first 5 lines of release notes
+                lines = info.body.strip().splitlines()[:5]
+                print("Release notes:")
+                for line in lines:
+                    print(f"  {line}")
+                if len(info.body.strip().splitlines()) > 5:
+                    print(f"  ... (see {info.html_url} for full notes)")
+        else:
+            print(f"No update available (current: v{current_version()})")
+    elif args.command == "update":
+        result = check_for_update(force=args.force)
+        if result.is_error:
+            print(f"Update check failed: {result.error}")
+            return 1
+        if not result.has_update:
+            print(f"Already up to date (v{current_version()})")
+            return 0
+        info = result.update_info
+        print(f"Update available: {info.display_version} (current: v{current_version()})")
+        if not args.yes:
+            try:
+                answer = input("Download and install? [y/N] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return 1
+            if answer not in ("y", "yes"):
+                print("Update cancelled.")
+                return 0
+        # Download
+        print(f"Downloading {info.asset_name}...")
+        success, path, err = download_update(info, progress_callback=lambda d, t: None)
+        if not success:
+            print(f"Download failed: {err}")
+            return 1
+        print(f"Downloaded and verified: {path}")
+        # Apply platform-specific update
+        import platform as _pf
+        if _pf.system() == "Windows":
+            from updater_win import apply_update
+        else:
+            from updater_linux import apply_update
+        success, err = apply_update(path, restart_proxy=True)
+        if not success:
+            print(f"Update apply failed: {err}")
+            print("You can manually download from: " + info.html_url)
+            return 1
+        print("Update applied. The new version will start shortly.")
+        # Exit this process so the new one can take over
+        return 0
     else:
         parser.error(f"Unknown command: {args.command}")
     return 0

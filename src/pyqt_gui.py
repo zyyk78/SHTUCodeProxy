@@ -113,6 +113,7 @@ from config_store import (
     load_config,
     save_config,
 )
+from updater import check_for_update, download_update, current_version, UpdateInfo, CheckResult
 from platform_utils import (
     default_codex_auth_path,
     default_codex_config_path,
@@ -577,6 +578,9 @@ class IosProxyApp(QMainWindow):
         self.tray_available = False
         self.force_quit = False
         self.tray_notice_shown = False
+        self.update_available_info = None  # type: UpdateInfo | None
+        self.update_check_timer = None  # type: QTimer | None
+        self.update_badge = None  # type: QLabel | None
         debug_log("main window initializing")
 
         self.build_ui()
@@ -587,6 +591,8 @@ class IosProxyApp(QMainWindow):
         self.status_timer.timeout.connect(self.refresh_connection_status)
         self.status_timer.start(5000)
         QTimer.singleShot(300, self.show_first_run_tip)
+        # Auto-update check: delay 5s after startup
+        QTimer.singleShot(5000, self.auto_check_update)
         debug_log("main window initialized")
 
     def setup_tray(self) -> None:
@@ -599,6 +605,8 @@ class IosProxyApp(QMainWindow):
         menu.addAction("Show SHTUCodeProxy", self.show_from_tray)
         menu.addAction("Start Proxy", self.start_proxy)
         menu.addAction("Stop Proxy", self.stop_proxy)
+        menu.addSeparator()
+        menu.addAction("Check for Updates", self.manual_check_update)
         menu.addSeparator()
         menu.addAction("Quit", self.quit_from_tray)
         tray.setContextMenu(menu)
@@ -658,10 +666,19 @@ class IosProxyApp(QMainWindow):
         title_box = QVBoxLayout()
         title = QLabel(f"SHTUCodeProxy {APP_VERSION}")
         title.setObjectName("WindowTitle")
+        self.update_badge = QLabel("")
+        self.update_badge.setObjectName("DangerText")
+        self.update_badge.setFixedHeight(20)
+        self.update_badge.hide()
         subtitle = QLabel("Claude Code and Codex local bridge")
         subtitle.setObjectName("WindowSubtitle")
         title_box.addWidget(title)
-        title_box.addWidget(subtitle)
+        badge_row = QHBoxLayout()
+        badge_row.setSpacing(4)
+        badge_row.addWidget(subtitle)
+        if self.update_badge:
+            badge_row.addWidget(self.update_badge)
+        title_box.addLayout(badge_row)
         nav_layout.addLayout(title_box)
         nav_layout.addStretch(1)
         root_layout.addWidget(nav)
@@ -1367,6 +1384,120 @@ class IosProxyApp(QMainWindow):
 
     def needs_first_run_setup(self) -> bool:
         return not any(model.api_key.strip() for model in self.config_data.models)
+
+
+    def auto_check_update(self) -> None:
+        # Background auto-update check on startup and periodically.
+        if not self.config_data.update_check_enabled:
+            return
+        result = check_for_update()
+        if result.has_update and result.update_info:
+            self._on_update_found(result.update_info, auto=True)
+        interval_ms = self.config_data.update_check_interval_hours * 3600 * 1000
+        if interval_ms > 0:
+            if self.update_check_timer:
+                self.update_check_timer.stop()
+            self.update_check_timer = QTimer(self)
+            self.update_check_timer.timeout.connect(self.auto_check_update)
+            self.update_check_timer.start(interval_ms)
+
+    def manual_check_update(self) -> None:
+        # User-triggered update check from tray menu.
+        self.append_log("Checking for updates...")
+        result = check_for_update(force=True)
+        if result.is_error:
+            self.append_log(f"Update check failed: {result.error}")
+            QMessageBox.warning(self, "Update Check", f"Could not check for updates:\n{result.error}")
+        elif result.has_update and result.update_info:
+            self._on_update_found(result.update_info, auto=False)
+        else:
+            self.append_log(f"SHTUCodeProxy is up to date (v{current_version()})")
+            QMessageBox.information(self, "Update Check", f"SHTUCodeProxy is up to date (v{current_version()})")
+
+    def _on_update_found(self, info, *, auto=False) -> None:
+        # Handle a detected update: show badge + prompt user.
+        self.update_available_info = info
+        if self.update_badge:
+            self.update_badge.setText(f"Update available: {info.display_version}")
+            self.update_badge.show()
+        if self.tray_icon and self.tray_available:
+            self.tray_icon.showMessage(
+                "SHTUCodeProxy Update",
+                f"Version {info.display_version} is available.",
+                QSystemTrayIcon.Information, 5000,
+            )
+        if self.config_data.update_auto_download:
+            self._download_and_prompt_install(info)
+        elif auto:
+            self.append_log(f"Update available: {info.display_version}. Use tray menu to update.")
+        else:
+            self._prompt_update(info)
+
+    def _prompt_update(self, info) -> None:
+        # Show a dialog asking the user to update.
+        notes = info.body.strip().splitlines()[:8] if info.body else []
+        notes_text = "\n".join(notes)
+        if info.body and len(info.body.strip().splitlines()) > 8:
+            notes_text += "\n..."
+        msg = QMessageBox(self)
+        msg.setWindowTitle("SHTUCodeProxy Update")
+        msg.setText(f"A new version is available: <b>{info.display_version}</b> (current: v{current_version()})")
+        msg.setInformativeText(notes_text if notes_text else "See release page for details.")
+        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg.setDefaultButton(QMessageBox.Yes)
+        msg.button(QMessageBox.Yes).setText("Update Now")
+        msg.button(QMessageBox.No).setText("Later")
+        if msg.exec_() == QMessageBox.Yes:
+            self._download_and_prompt_install(info)
+
+    def _download_and_prompt_install(self, info) -> None:
+        # Download the update with a progress dialog, then prompt to install.
+        from PyQt5.QtWidgets import QProgressDialog
+        progress = QProgressDialog("Downloading update...", "Cancel", 0, 100, self)
+        progress.setWindowTitle("SHTUCodeProxy Update")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        def on_progress(downloaded, total):
+            if progress.wasCanceled():
+                return
+            if total > 0:
+                progress.setValue(int(downloaded * 100 / total))
+            else:
+                progress.setRange(0, 0)
+        success, path, err = download_update(info, progress_callback=on_progress)
+        progress.close()
+        if not success:
+            self.append_log(f"Update download failed: {err}")
+            QMessageBox.warning(self, "Update Failed", f"Download failed:\n{err}")
+            return
+        self.append_log(f"Update downloaded: {path}")
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Install Update")
+        msg.setText(f"Update v{info.version} downloaded. The proxy will restart to apply the update.")
+        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg.setDefaultButton(QMessageBox.Yes)
+        msg.button(QMessageBox.Yes).setText("Restart & Update")
+        msg.button(QMessageBox.No).setText("Later")
+        if msg.exec_() == QMessageBox.Yes:
+            self._apply_downloaded_update(path)
+
+    def _apply_downloaded_update(self, new_exe_path) -> None:
+        # Apply the update and restart the application.
+        import platform as _pf
+        from pathlib import Path
+        if _pf.system() == "Windows":
+            from updater_win import apply_update
+        else:
+            from updater_linux import apply_update
+        success, err = apply_update(Path(new_exe_path), restart_proxy=True)
+        if not success:
+            self.append_log(f"Update apply failed: {err}")
+            QMessageBox.warning(self, "Update Failed", f"Could not apply update:\n{err}")
+            return
+        self.append_log("Update applied. Restarting...")
+        self.force_quit = True
+        self.close()
 
     def show_first_run_tip(self) -> None:
         if self.needs_first_run_setup():

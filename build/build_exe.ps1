@@ -43,12 +43,18 @@ if (-not $OneFileOnly) {
     --add-data "src\platform_utils.py;." `
     --add-data "src\config_store.py;." `
     --add-data "src\safe_io.py;." `
+    --add-data "src\updater.py;." `
+    --add-data "src\updater_win.py;." `
+    --add-data "src\updater_linux.py;." `
     --add-data "VERSION;." `
     --add-data "docs\headless-config.example.json;." `
     --paths src `
     --hidden-import PyQt5.QtCore `
     --hidden-import PyQt5.QtGui `
     --hidden-import PyQt5.QtWidgets `
+    --hidden-import updater `
+    --hidden-import updater_win `
+    --hidden-import updater_linux `
     app.py
 
   Compress-Archive `
@@ -76,12 +82,18 @@ if (-not $OneDirOnly) {
     --add-data "src\platform_utils.py;." `
     --add-data "src\config_store.py;." `
     --add-data "src\safe_io.py;." `
+    --add-data "src\updater.py;." `
+    --add-data "src\updater_win.py;." `
+    --add-data "src\updater_linux.py;." `
     --add-data "VERSION;." `
     --add-data "docs\headless-config.example.json;." `
     --paths src `
     --hidden-import PyQt5.QtCore `
     --hidden-import PyQt5.QtGui `
     --hidden-import PyQt5.QtWidgets `
+    --hidden-import updater `
+    --hidden-import updater_win `
+    --hidden-import updater_linux `
     app.py
 
   Copy-Item `

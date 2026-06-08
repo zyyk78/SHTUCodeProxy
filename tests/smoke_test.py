@@ -77,6 +77,10 @@ def make_config(tmpdir: Path) -> AppConfig:
         codex_auth_path=str(tmpdir / ".codex" / "auth.json"),
         default_stream=True,
         diagnostic_logging=False,
+        update_check_enabled=True,
+        update_check_interval_hours=24,
+        update_include_prerelease=False,
+        update_auto_download=False,
         models=[model],
     )
 
@@ -388,6 +392,10 @@ def exercise_model_suffix_routing() -> None:
         codex_auth_path="/tmp/codex-auth.json",
         default_stream=True,
         diagnostic_logging=False,
+        update_check_enabled=True,
+        update_check_interval_hours=24,
+        update_include_prerelease=False,
+        update_auto_download=False,
         models=[default_model, haiku_model, sonnet_alias, direct_deepseek],
     )
 
@@ -458,6 +466,10 @@ def exercise_pyqt_model_management_regressions() -> None:
         codex_auth_path="auth.json",
         default_stream=True,
         diagnostic_logging=False,
+        update_check_enabled=True,
+        update_check_interval_hours=24,
+        update_include_prerelease=False,
+        update_auto_download=False,
         models=models,
     )
     with (

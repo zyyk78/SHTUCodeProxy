@@ -22,6 +22,36 @@ def has_display() -> bool:
 
 
 if __name__ == "__main__":
+    # Handle --update-cleanup: called by the new exe after an auto-update
+    if "--update-cleanup" in sys.argv:
+        import platform as _pf
+        if _pf.system() == "Windows":
+            from updater_win import cleanup_after_update
+        else:
+            from updater_linux import cleanup_after_update
+        cleanup_after_update()
+
+    # Handle --start-proxy: auto-start proxy after update (then launch GUI normally)
+    # This flag is set by updater when restarting after an update
+    _auto_start_proxy = "--start-proxy" in sys.argv
+    # Remove our internal flags so they don't propagate to CLI parser
+    sys.argv = [a for a in sys.argv if a not in ("--update-cleanup", "--start-proxy")]
+
+    # Also handle rollback on startup — if a previous update crashed, restore the old exe
+    if getattr(sys, "frozen", False):
+        import platform as _pf2
+        if _pf2.system() == "Windows":
+            from updater_win import check_rollback_needed, perform_rollback
+        else:
+            from updater_linux import check_rollback_needed, perform_rollback
+        if check_rollback_needed():
+            ok, err = perform_rollback()
+            if ok:
+                print("Previous update failed — rolled back to the previous version.")
+            else:
+                print(f"Rollback attempt failed: {err}")
+            # Either way, continue running (with whatever version we have)
+
     if len(sys.argv) > 1:
         raise SystemExit(main(sys.argv[1:]))
 
@@ -33,5 +63,9 @@ if __name__ == "__main__":
         print("  SHTUCodeProxy configure-model --model-id MODEL --api-key KEY --upstream-model MODEL --default --codex")
         print("  SHTUCodeProxy start")
         raise SystemExit(2)
+
+    # Pass auto-start flag to GUI if set
+    if _auto_start_proxy:
+        os.environ["SHTUCODEPROXY_AUTO_START"] = "1"
 
     raise SystemExit(_import_pyqt_gui()())

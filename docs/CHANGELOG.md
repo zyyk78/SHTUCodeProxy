@@ -1,3 +1,20 @@
+## v4.6.3 (2026-06-08)
+
+Auto-update support release.
+
+### Added
+
+- **Auto-update system**: SHTUCodeProxy can now check for, download, and install updates automatically from GitHub Releases.
+  - New `src/updater.py` core module: GitHub Releases API version check, SHA256-verified download, result caching, `gh` CLI fallback on API rate limit.
+  - New `src/updater_win.py`: Windows exe replacement via rename-old-write-new-restart strategy with automatic rollback on crash.
+  - New `src/updater_linux.py`: Linux binary replacement (frozen exe only; source deployments prompt manual update).
+  - New CLI subcommands: `check-update` (check for newer version) and `update` (check + download + install).
+  - New `--update-cleanup` and `--start-proxy` startup flags for post-update restart and cleanup.
+  - GUI integration: tray menu "Check for Updates", startup auto-check (5s delay), 24h periodic check, update badge next to version, update prompt dialog, download progress bar, auto-download support.
+  - New config fields: `update_check_enabled`, `update_check_interval_hours`, `update_include_prerelease`, `update_auto_download`.
+
+- Rollback mechanism: if the new version crashes within 5 seconds of startup, the previous version is automatically restored via a marker file.
+
 ## v4.6.1 (2026-06-07)
 
 Text-only model multimodal fallback release.
