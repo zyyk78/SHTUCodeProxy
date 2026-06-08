@@ -1648,7 +1648,12 @@ def run() -> int:
     if hasattr(Qt, "AA_UseHighDpiPixmaps"):
         QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
-    instance_lock = file_lock("gui-instance", timeout=0.2)
+    # WHY: After auto-update, the old process may still be shutting down.
+    # Use a longer timeout so the new exe doesn't immediately fail with
+    # "already running" while the old process hasn't fully exited yet.
+    _is_post_update = bool(os.environ.get("SHTUCODEPROXY_AUTO_START"))
+    _lock_timeout = 10.0 if _is_post_update else 0.2
+    instance_lock = file_lock("gui-instance", timeout=_lock_timeout)
     try:
         instance_lock.__enter__()
     except TimeoutError:
