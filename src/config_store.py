@@ -35,6 +35,37 @@ MODEL_ENV_KEYS = (
     "ANTHROPIC_REASONING_MODEL",
 )
 
+# Anthropic-compatible model aliases for Claude Code Desktop discovery.
+# Claude Code Desktop filters /v1/models by model ID: it rejects names matching
+# known non-Anthropic providers (glm, gpt, deepseek, qwen, etc.) and only accepts
+# names containing claude/sonnet/opus/haiku. These aliases let the proxy advertise
+# models that pass Claude Code Desktop's filter, while routing them to the real
+# upstream models configured in model_env.
+CLAUDE_MODEL_ALIASES: Dict[str, str] = {
+    "claude-sonnet-4-20250514": "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "claude-sonnet-4": "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "claude-opus-4-20250514": "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "claude-opus-4": "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "claude-haiku-3-20240307": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "claude-haiku-3": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+}
+
+
+def resolve_claude_alias(model_id: str) -> Optional[str]:
+    """Resolve a Claude-style model alias to the real model_id via model_env mapping.
+
+    Returns None if the model_id is not a known alias."""
+    env_key = CLAUDE_MODEL_ALIASES.get(model_id)
+    if env_key:
+        return env_key
+    stripped = strip_model_date_suffix(model_id)
+    if stripped != model_id:
+        env_key = CLAUDE_MODEL_ALIASES.get(stripped)
+        if env_key:
+            return env_key
+    return None
+
+
 
 def strip_model_date_suffix(model_id: str) -> str:
     prefix, separator, suffix = model_id.rpartition("-")
@@ -247,7 +278,10 @@ class AppConfig:
         }
 
     def find_model(self, requested_model: Optional[str]) -> ModelConfig:
-        for candidate in (requested_model, self.default_model_id):
+        # Resolve Claude-style aliases (e.g. claude-sonnet-4-20250514) to model_env keys
+        alias_env_key = resolve_claude_alias(requested_model) if requested_model else None
+        alias_resolved = self.model_env.get(alias_env_key) if alias_env_key else None
+        for candidate in (requested_model, alias_resolved, self.default_model_id):
             if not candidate:
                 continue
             candidates = [candidate]

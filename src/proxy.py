@@ -29,7 +29,7 @@ from urllib.parse import urlparse
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from platform_utils import app_dir
-from config_store import AppConfig, ModelConfig, config_path, load_config
+from config_store import CLAUDE_MODEL_ALIASES, AppConfig, ModelConfig, config_path, load_config
 
 DEFAULT_UPSTREAM_URL = "https://genaiapi.shanghaitech.edu.cn/api/v1/response"
 DEFAULT_MODEL = "GPT-5.5"
@@ -2345,6 +2345,27 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 if getattr(mc, "max_context_tokens", 0) > 0:
                     model_entry["max_context_tokens"] = mc.max_context_tokens
                 models.append(model_entry)
+            # Add Anthropic-compatible alias entries for Claude Code Desktop discovery.
+            # Claude Code Desktop filters models by name, rejecting known non-Anthropic
+            # providers (glm, gpt, deepseek, qwen, etc.). Without aliases that pass
+            # its filter, it reports "Gateway returned no usable models".
+            seen_ids = {m["id"] for m in models}
+            for alias_id, env_key in CLAUDE_MODEL_ALIASES.items():
+                if alias_id in seen_ids:
+                    continue
+                resolved = config.model_env.get(env_key, "")
+                if not resolved:
+                    continue
+                alias_tokens = 0
+                for mc in config.models:
+                    if mc.model_id == resolved:
+                        alias_tokens = getattr(mc, "max_context_tokens", 0)
+                        break
+                alias_entry = {"id": alias_id, "object": "model", "owned_by": "anthropic"}
+                if alias_tokens > 0:
+                    alias_entry["max_context_tokens"] = alias_tokens
+                models.append(alias_entry)
+                seen_ids.add(alias_id)
             send_json(self, 200, {"object": "list", "data": models})
             return
         # GET /v1/responses/{response_id} - Codex may query stored responses
