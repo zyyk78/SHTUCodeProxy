@@ -905,6 +905,7 @@ class IosProxyApp(QMainWindow):
         bottom.addStretch(1)
         bottom.addWidget(self.button("Start Proxy Only", self.start_proxy))
         bottom.addWidget(self.button("Stop Proxy", self.stop_proxy))
+        bottom.addWidget(self.button("Check for Updates", self.manual_check_update, kind="optional"))
         main.addLayout(bottom)
 
         advanced = QFrame()
