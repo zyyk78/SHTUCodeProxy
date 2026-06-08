@@ -6,7 +6,7 @@ on:
       tag:
         description: "Release tag to attach assets to"
         required: true
-        default: "v4.4.2"
+        
       ref:
         description: "Git ref to build from (branch, tag, or SHA). Defaults to main."
         required: false
