@@ -868,3 +868,55 @@ Set-Location "C:\上海科技大学\脚本\shutucodeproxy"
 - **分支**：`dev/fix-thinking-block-injection`
 - **验证**：4 模型 × 4 场景 = 15/16 PASS（qwen-instruct 流式空文本为已知上游问题）
 - **详情**：`docs/dev-notes/2026-06-06-thinking-block-injection.md`
+
+
+# 实战教训：PowerShell 引号与反引号陷阱
+
+> 以下教训来自 v4.6.2 发布过程中反复踩坑的真实经历，必须严格遵守。
+
+## 核心原则：绝不用 PowerShell 字符串拼接修改文件内容
+
+PowerShell 的字符串处理（双引号变量展开、反引号转义、here-string 解析）会在处理 Markdown/代码片段时产生不可预期的结果。**已经因此翻车多次。**
+
+### 禁止做法
+
+```powershell
+# BAD: PowerShell .Replace() 处理含反引号、$、代码围栏的 Markdown 文本
+$content = $content.Replace("old", "new")
+
+# BAD: PowerShell here-string 构造含 ``` 围栏的 Markdown 块
+# 反引号会被 PowerShell 转义，变量会被展开，代码围栏会损坏
+
+# BAD: 任何在 PowerShell 中拼接 Markdown 代码块的操作
+```
+
+### 必须做法
+
+```powershell
+# GOOD: 写 Python 脚本执行文本替换
+$scriptPath = "C:\\path\\to\\_fix.py"
+# 用单引号 here-string 写 Python 脚本（无特殊字符部分）
+# 如含反引号/$ 等，先写不含这些字符的脚本骨架，再用 Python 自身拼接
+[System.IO.File]::WriteAllText($scriptPath, $py, [System.Text.UTF8Encoding]::new($false))
+python $scriptPath
+Remove-Item $scriptPath
+```
+
+### 具体翻车记录
+
+1. AGENTS.md 触发步骤替换失败（v4.6.2）：PowerShell .Replace() 处理含反引号和 $ 变量的 Markdown 代码块时，围栏被吃掉，粗体星号丢失，--ref 的 -- 被当作运算符。连续 3 次 git diff 显示格式损坏。最终改用 Python 脚本一次成功。
+
+2. gh workflow run 参数传递（v4.6.2）：--ref v4.6.2 只控制 Git checkout，不等于 workflow input tag。必须用 -f tag=v4.6.2 传递。第一次触发用了默认值 v4.4.2 导致 Linux 产物上传失败。
+
+3. node -e 中文乱码（历史）：PowerShell 管道传中文给外部程序变 ??，已在规则十三记录。
+
+### 规则
+
+| 场景 | 正确做法 |
+|------|----------|
+| 替换文件中的 Markdown 文本 | Python 脚本 |
+| 构造含代码围栏的内容 | Python 脚本 |
+| 替换含反引号/$ 的文本 | Python 脚本 |
+| 简单的一行字符串替换（无特殊字符） | PowerShell 可以，但不如 Python 稳妥 |
+| gh workflow 传参 | -f key=value，不用 --ref 代替 |
+
