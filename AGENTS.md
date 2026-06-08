@@ -910,6 +910,8 @@ Remove-Item $scriptPath
 
 3. node -e 中文乱码（历史）：PowerShell 管道传中文给外部程序变 ??，已在规则十三记录。
 
+4. Python 转义吞噬 Windows 路径（v4.6.2）：PowerShell here-string 中写 Python r-string 路径 r"C:\path\to\file.py"，写入 .py 文件后 Python 重新读取时 \t 被解释为 tab 字符，路径变为 C:\path<TAB>o\file.py。修复：在 Python 脚本内部用正斜杠路径或 os.path.join()，避免反斜杠转义链。
+
 ### 规则
 
 | 场景 | 正确做法 |
