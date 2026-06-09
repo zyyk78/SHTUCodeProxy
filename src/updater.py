@@ -278,7 +278,7 @@ def check_for_update(*, force: bool = False) -> CheckResult:
                         result = CheckResult(has_update=True, update_info=info, checked_at=now)
                         _write_check_cache(result)
                         return result
-                return CheckResult(has_update=False, error="GitHub API rate limited and redirect fallback failed", checked_at=now)
+                return CheckResult(has_update=False, error="GitHub API rate limited. Download manually from https://github.com/saberjack/SHTUCodeProxy/releases", checked_at=now)
         else:
             return CheckResult(has_update=False, error=f"GitHub API HTTP {e.code}", checked_at=now)
     except urllib.error.URLError as e:

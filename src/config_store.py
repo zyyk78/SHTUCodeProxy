@@ -102,6 +102,7 @@ class ModelConfig:
     stream_bridge: bool = False
     max_context_tokens: int = 0  # 0 means unknown/use global default
     supports_reasoning: bool = False
+    enable_thinking: bool = False  # Send chat_template_kwargs: {enable_thinking: true} to upstream for vLLM models
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ModelConfig":
@@ -121,6 +122,7 @@ class ModelConfig:
             stream_bridge=bool_from_config(data.get("stream_bridge"), "qwen" in f"{model_id} {upstream_model}".lower()),
             max_context_tokens=int(data.get("max_context_tokens") or data.get("max_tokens") or default_max_context_tokens(model_id, upstream_model)),
             supports_reasoning=bool_from_config(data.get("supports_reasoning"), default_supports_reasoning(model_id, upstream_model)),
+            enable_thinking=bool_from_config(data.get("enable_thinking"), "deepseek" in f"{model_id} {upstream_model}".lower() or "glm" in f"{model_id} {upstream_model}".lower()),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -137,6 +139,7 @@ class ModelConfig:
             "stream_bridge": self.stream_bridge,
             "max_context_tokens": self.max_context_tokens,
             "supports_reasoning": self.supports_reasoning,
+            "enable_thinking": self.enable_thinking,
         }
 
 
@@ -147,7 +150,7 @@ def default_supports_image(model_id: Any, upstream_model: Any = None) -> bool:
 
 def default_supports_reasoning(model_id: Any, upstream_model: Any = None) -> bool:
     model_text = f"{model_id or '' } {upstream_model or '' }".lower()
-    return "deepseek-pro" in model_text or "glm" in model_text
+    return "deepseek" in model_text or "glm" in model_text or "qwen" in model_text
 
 
 def default_max_context_tokens(model_id: Any, upstream_model: Any = None) -> int:

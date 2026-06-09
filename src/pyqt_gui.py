@@ -872,6 +872,9 @@ class IosProxyApp(QMainWindow):
         self.supports_reasoning_check = QCheckBox("Reasoning")
         self.supports_reasoning_check.setObjectName("model_supports_reasoning_check")
         self.supports_reasoning_check.setToolTip("Enable thinking/reasoning mode for models that support it")
+        self.enable_thinking_check = QCheckBox("Thinking")
+        self.enable_thinking_check.setObjectName("model_enable_thinking_check")
+        self.enable_thinking_check.setToolTip("Send enable_thinking parameter to upstream (vLLM models like DeepSeek Pro, GLM)")
         self.modality_checks = QWidget()
         modality_layout = QHBoxLayout(self.modality_checks)
         modality_layout.setContentsMargins(0, 0, 0, 0)
@@ -879,6 +882,7 @@ class IosProxyApp(QMainWindow):
         modality_layout.addWidget(self.supports_audio_check)
         modality_layout.addWidget(self.supports_video_check)
         modality_layout.addWidget(self.supports_reasoning_check)
+        modality_layout.addWidget(self.enable_thinking_check)
         modality_layout.addStretch(1)
         for row, (label, widget) in enumerate((
             ("Display Name", self.name_edit),
@@ -1113,6 +1117,7 @@ class IosProxyApp(QMainWindow):
         self.supports_audio_check.setChecked(bool(getattr(model, "supports_audio", False)))
         self.supports_video_check.setChecked(bool(getattr(model, "supports_video", False)))
         self.supports_reasoning_check.setChecked(bool(getattr(model, "supports_reasoning", False)))
+        self.enable_thinking_check.setChecked(bool(getattr(model, "enable_thinking", False)))
 
     def on_api_format_changed(self, api_format: str) -> None:
         debug_log(f"api format changed value={api_format!r}")
@@ -1173,6 +1178,7 @@ class IosProxyApp(QMainWindow):
         model.max_context_tokens = old_model.max_context_tokens
         model.stream_bridge = old_model.stream_bridge
         model.supports_reasoning = self.supports_reasoning_check.isChecked()
+        model.enable_thinking = self.enable_thinking_check.isChecked()
         if not model.model_id or not model.base_url:
             self.error("Missing value", "Model ID and Base URL are required.")
             return False
@@ -1414,7 +1420,7 @@ class IosProxyApp(QMainWindow):
         result = check_for_update(force=True)
         if result.is_error:
             self.append_log(f"Update check failed: {result.error}")
-            QMessageBox.warning(self, "Update Check", f"Could not check for updates:\n{result.error}")
+            QMessageBox.warning(self, "Update Check", f"Could not check for updates:\n{result.error}\n\nYou can download the latest version manually from:\nhttps://github.com/saberjack/SHTUCodeProxy/releases")
         elif result.has_update and result.update_info:
             self._on_update_found(result.update_info, auto=False)
         else:
@@ -1504,7 +1510,30 @@ class IosProxyApp(QMainWindow):
             return
         self.append_log("Update applied. Restarting...")
         self.force_quit = True
+        # WHY: Remove the GUI instance lock file before exiting.
+        # os._exit(0) does NOT run Python finally blocks, so the lock file
+        # left by file_lock context manager would persist and block the
+        # new process with "already running" error.
+        try:
+            from pathlib import Path as _P
+            from tempfile import gettempdir
+            _lock = _P(gettempdir()) / "SHTUCodeProxy" / "gui-instance.lock"
+            if _lock.exists():
+                _lock.unlink()
+        except Exception:
+            pass
+        try:
+            self.tray_icon.hide()
+        except Exception:
+            pass
         self.close()
+        # WHY: Brief delay before exit so the new process has time to
+        # acquire the lock and start. Without this, the new process may
+        # find a stale lock file from our context manager cleanup race.
+        import time as _time
+        _time.sleep(0.5)
+        import os as _os
+        _os._exit(0)
 
     def show_first_run_tip(self) -> None:
         if self.needs_first_run_setup():
@@ -1658,12 +1687,31 @@ def run() -> int:
     # Use a longer timeout so the new exe doesn't immediately fail with
     # "already running" while the old process hasn't fully exited yet.
     _is_post_update = bool(os.environ.get("SHTUCODEPROXY_AUTO_START"))
-    _lock_timeout = 30.0 if _is_post_update else 0.2
+    # WHY: After auto-update, the old process may still be shutting down.
+    # Use a longer timeout so the new exe doesn't immediately fail with
+    # "already running" while the old process hasn't fully exited yet.
+    _lock_timeout = 30.0 if _is_post_update else 5.0
+    # WHY: Pre-check for stale lock files before the formal lock attempt.
+    # If the PID in the lock file is no longer running, remove the stale lock
+    # immediately to avoid unnecessary timeout waits.
+    try:
+        from pathlib import Path as _P
+        from tempfile import gettempdir
+        _pre_lock = _P(gettempdir()) / "SHTUCodeProxy" / "gui-instance.lock"
+        if _pre_lock.exists():
+            _pre_pid = _pre_lock.read_text(encoding="utf-8").strip()
+            if _pre_pid.isdigit():
+                from safe_io import _process_is_running
+                if not _process_is_running(int(_pre_pid)):
+                    _pre_lock.unlink()
+                    debug_log(f"removed stale lock (PID {_pre_pid} no longer running)")
+    except Exception:
+        pass
     instance_lock = file_lock("gui-instance", timeout=_lock_timeout)
     try:
         instance_lock.__enter__()
     except TimeoutError:
-        QMessageBox.warning(None, "SHTUCodeProxy already running", "Another SHTUCodeProxy window is already running. Please use the existing window or tray icon.")
+        QMessageBox.warning(None, "SHTUCodeProxy already running", "Another SHTUCodeProxy window is already running.\n\nIf no other window is visible, check the system tray or delete the lock file:\n%TEMP%\\SHTUCodeProxy\\gui-instance.lock")
         return 1
     app.setQuitOnLastWindowClosed(False)
     app.setApplicationName("SHTUCodeProxy")
