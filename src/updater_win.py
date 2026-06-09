@@ -5,15 +5,18 @@ Strategy:
   1. Rename running exe to .old (Windows allows renaming a running file)
   2. Copy new exe to the original path
   3. Start new exe with --update-cleanup flag
-  4. Old process exits; new process deletes the .old file on startup
+  4. Old process exits; new process cleans up in cleanup_after_update()
 
 Rollback:
-  If the new exe crashes within 5 seconds of startup, a rollback marker file
+  If the new exe crashes within 30 seconds of startup, a rollback marker file
   is detected on the next launch, and the .old file is restored.
+  The marker includes a timestamp - only markers older than 30s trigger rollback,
+  giving the new process time to start and remove the marker.
 """
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -22,7 +25,7 @@ from typing import Optional, Tuple
 
 ROLLBACK_MARKER = "SHTUCodeProxy-update-rollback"
 CLEANUP_FLAG = "--update-cleanup"
-ROLLBACK_GRACE_SECONDS = 5
+ROLLBACK_GRACE_SECONDS = 30
 
 
 def _running_exe_path() -> Optional[Path]:
@@ -37,7 +40,7 @@ def _rollback_marker_path() -> Optional[Path]:
     exe = _running_exe_path()
     if not exe:
         return None
-    return exe.parent / f".{ROLLBACK_MARKER}"
+    return exe.parent / "." + ROLLBACK_MARKER
 
 
 def _old_exe_path() -> Optional[Path]:
@@ -51,12 +54,31 @@ def _old_exe_path() -> Optional[Path]:
 def check_rollback_needed() -> bool:
     """Check if a previous update failed and rollback is needed.
 
-    Should be called early in app startup (before the grace period expires).
+    Should be called early in app startup.
+    WHY: Time-based check prevents false rollback when the new process
+    is still starting up. Only markers older than ROLLBACK_GRACE_SECONDS
+    trigger rollback.
     """
     marker = _rollback_marker_path()
-    if marker and marker.exists():
-        return True
-    return False
+    if not marker or not marker.exists():
+        return False
+
+    # Read timestamp from marker
+    try:
+        content = marker.read_text(encoding="utf-8").strip()
+        # Format: "PID TIMESTAMP EXE_PATH" or just "EXE_PATH" (old format)
+        parts = content.split()
+        if len(parts) >= 2:
+            marker_time = float(parts[1])
+            age = time.time() - marker_time
+            if age < ROLLBACK_GRACE_SECONDS:
+                # Marker is recent - new process may still be starting
+                return False
+        # Old format or marker is old enough - rollback needed
+    except Exception:
+        pass
+
+    return True
 
 
 def perform_rollback() -> Tuple[bool, Optional[str]]:
@@ -72,7 +94,7 @@ def perform_rollback() -> Tuple[bool, Optional[str]]:
         return False, "Cannot determine exe paths for rollback"
 
     if not old.exists():
-        # No backup to restore — just clean up marker
+        # No backup to restore - just clean up marker
         if marker:
             try:
                 marker.unlink()
@@ -85,10 +107,9 @@ def perform_rollback() -> Tuple[bool, Optional[str]]:
         try:
             exe.unlink()
         except PermissionError:
-            return False, f"Cannot remove current exe (locked): {exe}"
+            return False, "Cannot remove current exe (locked): " + str(exe)
 
         # Restore the old exe
-        import shutil
         shutil.move(str(old), str(exe))
 
         # Clean up marker
@@ -100,7 +121,7 @@ def perform_rollback() -> Tuple[bool, Optional[str]]:
 
         return True, None
     except Exception as e:
-        return False, f"Rollback failed: {e}"
+        return False, "Rollback failed: " + str(e)
 
 
 def apply_update(
@@ -111,11 +132,12 @@ def apply_update(
     """Apply a downloaded update by replacing the running executable.
 
     Steps:
-      1. Write rollback marker
-      2. Rename current exe → .old
+      1. Write rollback marker (with PID + timestamp)
+      2. Rename current exe -> .old
       3. Copy new exe to original path
-      4. Start new exe with --update-cleanup
-      5. Current process should exit after this returns
+      4. Write staging info for cleanup_after_update
+      5. Start new exe with --update-cleanup
+      6. Current process should exit after this returns
 
     Args:
         new_exe_path: Path to the downloaded new exe (in temp dir).
@@ -129,15 +151,20 @@ def apply_update(
     marker = _rollback_marker_path()
 
     if not exe:
-        return False, "Not running from a frozen executable — cannot auto-update"
+        return False, "Not running from a frozen executable - cannot auto-update"
 
     if not new_exe_path.exists():
-        return False, f"New exe not found: {new_exe_path}"
+        return False, "New exe not found: " + str(new_exe_path)
 
     try:
-        # Step 1: Write rollback marker
+        # Step 1: Write rollback marker with PID and timestamp
+        # WHY: Including PID and timestamp allows the new process to wait
+        # for the old one to exit, and prevents false rollback during startup
         if marker:
-            marker.write_text(str(exe), encoding="utf-8")
+            marker.write_text(
+                str(os.getpid()) + " " + str(time.time()) + " " + str(exe),
+                encoding="utf-8",
+            )
 
         # Step 2: Rename current exe to .old
         # Remove previous .old if it exists
@@ -145,8 +172,8 @@ def apply_update(
             try:
                 old.unlink()
             except PermissionError:
-                # Another process might hold a handle — try rename with suffix
-                old2 = Path(str(old) + f".{int(time.time())}")
+                # Another process might hold a handle - try rename with suffix
+                old2 = Path(str(old) + "." + str(int(time.time())))
                 try:
                     old.rename(old2)
                 except Exception:
@@ -161,10 +188,9 @@ def apply_update(
                     marker.unlink()
                 except Exception:
                     pass
-            return False, f"Cannot rename running exe: {e}"
+            return False, "Cannot rename running exe: " + str(e)
 
-        # Step 3: Copy new exe and _internal directory to original location
-        import shutil
+        # Step 3: Copy new exe to original location
         try:
             shutil.copy2(str(new_exe_path), str(exe))
         except Exception as e:
@@ -178,21 +204,21 @@ def apply_update(
                     marker.unlink()
                 except Exception:
                     pass
-            return False, f"Cannot copy new exe to {exe}: {e}"
-        # WHY: PyInstaller COLLECT mode requires the _internal directory
-        # next to the exe. We store the source path so cleanup_after_update
-        # can copy it AFTER the old process exits. Copying _internal while
-        # the old process is still running causes locked-DLL failures.
+            return False, "Cannot copy new exe to " + str(exe) + ": " + str(e)
+
+        # Step 4: Write staging info for cleanup_after_update
+        # WHY: We do NOT try to delete or move _internal/ here because
+        # the old process still has DLLs loaded from it (file locks).
+        # Instead, we write the source path and old PID so cleanup_after_update
+        # can handle _internal/ copy/deletion AFTER the old process exits.
         staging_file = exe.parent / ".shtucodeproxy_update_staging"
         try:
-            staging_file.write_text(str(new_exe_path.parent), encoding="utf-8")
+            staging_file.write_text(
+                str(new_exe_path.parent) + "\n" + str(os.getpid()),
+                encoding="utf-8",
+            )
         except Exception:
             pass
-
-        # WHY: Do NOT delete the lock file here. The new process handles lock
-        # cleanup on startup via the SHTUCODEPROXY_AUTO_START flag.
-        # Deleting here causes a race: new process creates its own lock,
-        # then old process deletes it, leaving new process without a lock.
 
         # Step 5: Start the new exe with cleanup flag
         cmd = [str(exe)]
@@ -212,66 +238,125 @@ def apply_update(
                 stderr=subprocess.DEVNULL,
             )
         except Exception as e:
-            # New process failed to start — rollback marker is still in place,
+            # New process failed to start - rollback marker is still in place,
             # so next launch will detect the failure
-            return False, f"Failed to start new exe: {e}"
+            return False, "Failed to start new exe: " + str(e)
 
         return True, None
 
     except Exception as e:
-        # Unexpected error — marker is in place, rollback will happen on next launch
-        return False, f"Update apply failed: {e}"
+        # Unexpected error - marker is in place, rollback will happen on next launch
+        return False, "Update apply failed: " + str(e)
+
+
+def _wait_for_pid_exit(pid: int, timeout: float = 10.0) -> bool:
+    """Wait for a process with the given PID to exit.
+
+    Returns True if the process exited within the timeout, False otherwise.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", "PID eq " + str(pid), "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if str(pid) not in result.stdout:
+                return True
+        except Exception:
+            # If we can not check, assume it exited
+            return True
+        time.sleep(0.5)
+    return False
 
 
 def cleanup_after_update() -> None:
     """Called by the new process on startup with --update-cleanup.
 
-    Waits for the grace period, then removes the .old backup and rollback marker.
-    If the process crashes before this completes, the marker remains and
-    rollback will be triggered on the next launch.
+    Waits for the old process to exit, then removes the .old backup,
+    handles _internal/ directory, and removes staging files.
     """
-    # Wait briefly for the old process to fully exit
-    time.sleep(2)
-
     exe = _running_exe_path()
     old = _old_exe_path()
     marker = _rollback_marker_path()
 
-    # Copy _internal directory from staging (post-update, old process has exited)
-    exe = _running_exe_path()
+    # Read old PID from staging file to wait for it to exit
+    old_pid = None
+    source_dir = None
     if exe:
         staging_file = exe.parent / ".shtucodeproxy_update_staging"
         if staging_file.exists():
             try:
-                import shutil
-                source_dir = Path(staging_file.read_text(encoding="utf-8").strip())
-                source_internal = source_dir / "_internal"
-                dest_internal = exe.parent / "_internal"
-                if source_internal.is_dir():
-                    if dest_internal.is_dir():
-                        for item in dest_internal.iterdir():
-                            try:
-                                if item.is_dir():
-                                    shutil.rmtree(str(item))
-                                else:
-                                    item.unlink()
-                            except Exception:
-                                pass
-                    shutil.copytree(str(source_internal), str(dest_internal), dirs_exist_ok=True)
+                content = staging_file.read_text(encoding="utf-8").strip()
+                lines = content.split("\n")
+                if len(lines) >= 1:
+                    source_dir = Path(lines[0].strip())
+                if len(lines) >= 2:
+                    old_pid = int(lines[1].strip())
             except Exception:
                 pass
-            finally:
-                try:
-                    staging_file.unlink()
-                except Exception:
-                    pass
+
+    # Wait for old process to exit (up to 15 seconds)
+    # WHY: We MUST wait for the old process to fully exit before touching
+    # _internal/ or .old because the old process holds file locks on them.
+    if old_pid and old_pid != os.getpid():
+        _wait_for_pid_exit(old_pid, timeout=15.0)
+
+    # Additional brief wait for file handles to be released by the OS
+    time.sleep(1)
+
+    # Handle _internal/ directory
+    # WHY: If the user originally installed from a folder-based .zip, they have
+    # _internal/ next to the exe. The auto-update downloads a single-file exe.
+    # The stale _internal/ can cause PyInstaller to load old modules/VERSION,
+    # leading to version mismatch and DLL conflicts.
+    if exe and source_dir:
+        source_internal = source_dir / "_internal"
+        dest_internal = exe.parent / "_internal"
+        if source_internal.is_dir():
+            # Source has _internal - this is a folder-based update
+            if dest_internal.is_dir():
+                for item in dest_internal.iterdir():
+                    try:
+                        if item.is_dir():
+                            shutil.rmtree(str(item))
+                        else:
+                            item.unlink()
+                    except Exception:
+                        pass
+            try:
+                shutil.copytree(
+                    str(source_internal), str(dest_internal), dirs_exist_ok=True
+                )
+            except Exception:
+                pass
+        elif dest_internal.is_dir():
+            # Source has NO _internal but destination does
+            # WHY: This means the new exe is a single-file build.
+            # The stale _internal/ from the old folder-based install must
+            # be removed to prevent version mismatch and DLL conflicts.
+            try:
+                shutil.rmtree(str(dest_internal))
+            except Exception:
+                pass
+
+    # Remove staging file
+    if exe:
+        staging_file = exe.parent / ".shtucodeproxy_update_staging"
+        if staging_file.exists():
+            try:
+                staging_file.unlink()
+            except Exception:
+                pass
 
     # Remove .old backup
     if old and old.exists():
         try:
             old.unlink()
         except PermissionError:
-            # Old process might still be shutting down — retry after a delay
+            # Old process might still be shutting down - retry after a delay
             time.sleep(3)
             try:
                 old.unlink()

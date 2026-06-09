@@ -33,8 +33,14 @@ if __name__ == "__main__":
             from updater_win import cleanup_after_update
         else:
             from updater_linux import cleanup_after_update
-        # Remove rollback marker immediately so crashes during GUI startup don't trigger rollback
-        # (the exe replacement was already successful if we got this far)
+        # WHY: Remove rollback marker IMMEDIATELY before anything else.
+        # The new process has started successfully (we're executing Python code),
+        # so the exe replacement worked. Keeping the marker risks false rollback
+        # if the GUI crashes during startup (e.g., PyQt5 import error from stale
+        # _internal/). Removing it here is safe because:
+        # 1. The new exe started and Python is running → update succeeded
+        # 2. If we crash after this point, rollback is NOT the right fix
+        #    (the new exe is correct, something else caused the crash)
         import platform as _pf_marker
         if _pf_marker.system() == "Windows":
             from updater_win import _rollback_marker_path
@@ -53,6 +59,9 @@ if __name__ == "__main__":
     sys.argv = [a for a in sys.argv if a not in ("--update-cleanup", "--start-proxy")]
 
     # Also handle rollback on startup — if a previous update crashed, restore the old exe
+    # WHY: check_rollback_needed() now uses time-based logic — only markers
+    # older than 30 seconds trigger rollback, preventing false rollback when
+    # the new process is still starting up.
     if getattr(sys, "frozen", False):
         import platform as _pf2
         if _pf2.system() == "Windows":
@@ -64,7 +73,7 @@ if __name__ == "__main__":
             if ok:
                 print("Previous update failed — rolled back to the previous version.")
             else:
-                print(f"Rollback attempt failed: {err}")
+                print("Rollback attempt failed: " + str(err))
             # Either way, continue running (with whatever version we have)
 
     if len(sys.argv) > 1:

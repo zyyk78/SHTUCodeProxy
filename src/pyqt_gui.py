@@ -1494,6 +1494,14 @@ class IosProxyApp(QMainWindow):
         # Apply the update and restart the application.
         import platform as _pf
         from pathlib import Path
+        # WHY: Stop the proxy server BEFORE applying the update.
+        # This releases port 8082 so the new process can bind it
+        # without port conflicts. Previously, the old proxy was
+        # still running when the new process started, causing crashes.
+        try:
+            self.stop_proxy()
+        except Exception:
+            pass
         # WHY: If the downloaded file is a zip, extract it first to get the exe.
         new_path = Path(new_exe_path)
         if new_path.suffix.lower() == ".zip":
@@ -1531,11 +1539,19 @@ class IosProxyApp(QMainWindow):
         except Exception:
             pass
         self.close()
-        # WHY: Brief delay before exit so the new process has time to
-        # acquire the lock and start. Without this, the new process may
-        # find a stale lock file from our context manager cleanup race.
-        import time as _time
-        _time.sleep(0.5)
+        # WHY: Delete the lock file before exiting.
+        # os._exit(0) does NOT run finally blocks, so file_lock.__exit__
+        # never cleans up the lock. Without explicit deletion, the new
+        # process finds a stale lock and thinks the old process is still
+        # running, causing "already running" dialogs or long waits.
+        try:
+            from pathlib import Path as _P
+            from tempfile import gettempdir
+            _lock_file = _P(gettempdir()) / "SHTUCodeProxy" / "gui-instance.lock"
+            if _lock_file.exists():
+                _lock_file.unlink()
+        except Exception:
+            pass
         import os as _os
         _os._exit(0)
 
@@ -1691,7 +1707,7 @@ def run() -> int:
     # Use a longer timeout so the new exe doesn't immediately fail with
     # "already running" while the old process hasn't fully exited yet.
     _is_post_update = bool(os.environ.get("SHTUCODEPROXY_AUTO_START"))
-    _lock_timeout = 30.0 if _is_post_update else 5.0
+    _lock_timeout = 10.0 if _is_post_update else 5.0
     # WHY: After auto-update, force-delete the lock file regardless of whether
     # the old PID is still running. The old process called os._exit(0) which
     # does NOT run finally blocks, so file_lock.__exit__ never cleans up.
