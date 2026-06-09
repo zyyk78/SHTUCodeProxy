@@ -40,7 +40,7 @@ def _rollback_marker_path() -> Optional[Path]:
     exe = _running_exe_path()
     if not exe:
         return None
-    return exe.parent / "." + ROLLBACK_MARKER
+    return exe.parent / ("." + ROLLBACK_MARKER)
 
 
 def _old_exe_path() -> Optional[Path]:
