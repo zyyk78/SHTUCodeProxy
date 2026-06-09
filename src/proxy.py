@@ -3134,6 +3134,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             if _reasoning_code_open:
                                 _reasoning_code_open = False
                                 emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": "\n```\n\n"})
+                                output_text_parts.append("\n```\n\n")
                             output_text_parts.append(text)
                             if not text_item_started:
                                 text_item_started = True
@@ -3151,6 +3152,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                 # WHY: Prepend 🤔 marker to reasoning so users can distinguish
                                 # thinking from the actual answer in any client (Codex, Claude Code, etc.)
                                 _reasoning_prefix = "🤔 Thinking\n```\n"
+                                if not _reasoning_code_open:
+                                    output_text_parts.append(_reasoning_prefix)
                                 _reasoning_code_open = True
                                 output_text_parts.append(reasoning_text)
                                 if not text_item_started:
@@ -3268,6 +3271,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             if _reasoning_code_open:
                 _reasoning_code_open = False
                 emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": "\n```\n\n"})
+                output_text_parts.append("\n```\n\n")
             if not text_item_started:
                 emit("response.output_item.added", {"output_index": 0, "item": {"id": message_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})
                 emit("response.content_part.added", {"item_id": message_id, "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": ""}})
@@ -3417,6 +3421,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                 # WHY: Prepend 🤔 marker to reasoning so users can distinguish
                                 # thinking from the actual answer in any client (Codex, Claude Code, etc.)
                                 _reasoning_prefix = "🤔 Thinking\n```\n"
+                                if not _reasoning_code_open:
+                                    output_text_parts.append(_reasoning_prefix)
                                 _reasoning_code_open = True
                                 output_text_parts.append(reasoning_text)
                                 if not text_item_started:
@@ -3643,6 +3649,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                 "index": _thinking_block_index,
                                 "delta": {"type": "text_delta", "text": "\n```\n\n"},
                             })
+                            output_text_parts.append("\n```\n\n")
                         if not text_block_started:
                             write_sse(self, "content_block_start", {
                                 "type": "content_block_start",
@@ -3670,6 +3677,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                 # WHY: Prepend 🤔 marker to reasoning so users can distinguish
                                 # thinking from the actual answer in any client
                                 _reasoning_prefix = "🤔 Thinking\n```\n"
+                                if not _reasoning_code_open:
+                                    output_text_parts.append(_reasoning_prefix)
                                 _reasoning_code_open = True
                                 if not text_block_started:
                                     write_sse(self, "content_block_start", {
@@ -3834,6 +3843,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 "index": _thinking_block_index,
                 "delta": {"type": "text_delta", "text": "\n```\n"},
             })
+            output_text_parts.append("\n```\n")
         if text_block_started and not text_block_stopped:
             write_sse(self, "content_block_stop", {"type": "content_block_stop", "index": _thinking_block_index})
             text_block_stopped = True
