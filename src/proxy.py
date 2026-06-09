@@ -2420,7 +2420,7 @@ def responses_json_to_anthropic_message(payload: Dict[str, Any], model_config: M
     # redacted_thinking as fallback.
     has_real_thinking = False
     _reasoning_as_text_fallback = ""
-    _wants_thinking = thinking_requested(payload) or getattr(model_config, 'supports_reasoning', False) or getattr(model_config, 'enable_thinking', False)
+    _wants_thinking = thinking_requested(payload)
     for item in output:
         if not isinstance(item, dict):
             continue
@@ -3118,7 +3118,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             # WHY: When client did NOT request thinking, emit reasoning as
                             # regular text so it is not silently dropped (e.g. qwen-instruct,
                             # glm-chat with enable_thinking return all content in reasoning).
-                            _use_as_text = not (thinking_requested(body) or getattr(model_config, 'supports_reasoning', False) or getattr(model_config, 'enable_thinking', False))
+                            _use_as_text = not thinking_requested(body)
                             if _use_as_text:
                                 output_text_parts.append(reasoning_text)
                                 if not text_item_started:
@@ -3378,7 +3378,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     elif kind == "reasoning" and parsed:
                         reasoning_text = parsed.get("text", "")
                         if reasoning_text:
-                            _use_as_text = not (thinking_requested(body) or getattr(model_config, 'supports_reasoning', False) or getattr(model_config, 'enable_thinking', False))
+                            _use_as_text = not thinking_requested(body)
                             if _use_as_text:
                                 output_text_parts.append(reasoning_text)
                                 if not text_item_started:
@@ -3622,7 +3622,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             # When client did NOT request thinking, emit reasoning as regular
                             # text so it is not silently dropped (e.g. qwen-instruct, glm-chat
                             # with enable_thinking return all content in reasoning).
-                            _use_as_text = not (thinking_requested(body) or getattr(model_config, 'supports_reasoning', False) or getattr(model_config, 'enable_thinking', False))
+                            _use_as_text = not thinking_requested(body)
                             if _use_as_text:
                                 if not text_block_started:
                                     write_sse(self, "content_block_start", {
