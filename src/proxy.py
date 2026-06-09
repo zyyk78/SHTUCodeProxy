@@ -3032,6 +3032,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         thinking_state: Dict[str, Any] = {"in_thinking": False}
         chat_stream_usage: Optional[Dict[str, Any]] = None
         done_payload: Optional[Dict[str, Any]] = None
+        input_tokens = estimate_value_tokens(body.get("input"))
         sequence_number = 0
         text_item_started = False
         reasoning_item_started = False
@@ -3255,6 +3256,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if thinking_requested(body):
             output = inject_redacted_thinking_to_responses_output(output)
             output = strip_encrypted_content_from_output(output)
+        completed = responses_completed_payload(request_id, model_config.model_id, output, input_tokens, output_text)
         if done_payload and isinstance(done_payload.get("response"), dict):
             completed["usage"] = done_payload["response"].get("usage") or completed["usage"]
         elif chat_stream_usage:

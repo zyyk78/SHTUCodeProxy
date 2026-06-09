@@ -1531,18 +1531,6 @@ class IosProxyApp(QMainWindow):
             return
         self.append_log("Update applied. Restarting...")
         self.force_quit = True
-        # WHY: Remove the GUI instance lock file before exiting.
-        # os._exit(0) does NOT run Python finally blocks, so the lock file
-        # left by file_lock context manager would persist and block the
-        # new process with "already running" error.
-        try:
-            from pathlib import Path as _P
-            from tempfile import gettempdir
-            _lock = _P(gettempdir()) / "SHTUCodeProxy" / "gui-instance.lock"
-            if _lock.exists():
-                _lock.unlink()
-        except Exception:
-            pass
         try:
             self.tray_icon.hide()
         except Exception:
@@ -1708,24 +1696,28 @@ def run() -> int:
     # Use a longer timeout so the new exe doesn't immediately fail with
     # "already running" while the old process hasn't fully exited yet.
     _is_post_update = bool(os.environ.get("SHTUCODEPROXY_AUTO_START"))
-    # WHY: After auto-update, the old process may still be shutting down.
-    # Use a longer timeout so the new exe doesn't immediately fail with
-    # "already running" while the old process hasn't fully exited yet.
     _lock_timeout = 30.0 if _is_post_update else 5.0
-    # WHY: Pre-check for stale lock files before the formal lock attempt.
-    # If the PID in the lock file is no longer running, remove the stale lock
-    # immediately to avoid unnecessary timeout waits.
+    # WHY: After auto-update, force-delete the lock file regardless of whether
+    # the old PID is still running. The old process called os._exit(0) which
+    # does NOT run finally blocks, so file_lock.__exit__ never cleans up.
+    # We know the old process is exiting, so the lock is always stale here.
+    # Without this force-delete, the new process sees the old PID as "running"
+    # and waits 30 seconds (causing screen flashing), or fails entirely.
     try:
         from pathlib import Path as _P
         from tempfile import gettempdir
         _pre_lock = _P(gettempdir()) / "SHTUCodeProxy" / "gui-instance.lock"
         if _pre_lock.exists():
-            _pre_pid = _pre_lock.read_text(encoding="utf-8").strip()
-            if _pre_pid.isdigit():
-                from safe_io import _process_is_running
-                if not _process_is_running(int(_pre_pid)):
-                    _pre_lock.unlink()
-                    debug_log(f"removed stale lock (PID {_pre_pid} no longer running)")
+            if _is_post_update:
+                _pre_lock.unlink()
+                debug_log("force-removed lock file (post-update launch)")
+            else:
+                _pre_pid = _pre_lock.read_text(encoding="utf-8").strip()
+                if _pre_pid.isdigit():
+                    from safe_io import _process_is_running
+                    if not _process_is_running(int(_pre_pid)):
+                        _pre_lock.unlink()
+                        debug_log(f"removed stale lock (PID {_pre_pid} no longer running)")
     except Exception:
         pass
     instance_lock = file_lock("gui-instance", timeout=_lock_timeout)

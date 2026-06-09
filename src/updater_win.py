@@ -202,20 +202,10 @@ def apply_update(
                 # may mean some features break but the app should still start
                 pass
 
-        # Step 4: Remove the GUI instance lock so the new process can acquire it
-        # WHY: The old process may still be shutting down when the new one starts.
-        # The lock file blocks the new process with "already running" error.
-        # Since we are the same user and we are about to exit, it is safe to
-        # remove the lock file now.
-        try:
-            from safe_io import file_lock
-            from tempfile import gettempdir
-            from pathlib import Path as _P
-            lock_file = _P(gettempdir()) / "SHTUCodeProxy" / "gui-instance.lock"
-            if lock_file.exists():
-                lock_file.unlink()
-        except Exception:
-            pass
+        # WHY: Do NOT delete the lock file here. The new process handles lock
+        # cleanup on startup via the SHTUCODEPROXY_AUTO_START flag.
+        # Deleting here causes a race: new process creates its own lock,
+        # then old process deletes it, leaving new process without a lock.
 
         # Step 5: Start the new exe with cleanup flag
         cmd = [str(exe)]
