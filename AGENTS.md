@@ -2,7 +2,7 @@
 
 > 项目目录: C:\上海科技大学\脚本\shutucodeproxy
 > GitHub: https://github.com/saberjack/SHTUCodeProxy
-> 当前版本: v4.6.6
+> 当前版本: v4.7.1
 
 ## 项目概述
 
@@ -880,6 +880,66 @@ Set-Location "C:\上海科技大学\脚本\shutucodeproxy"
 | 9. 构建 Linux 包 | `gh workflow run "Build Linux Release Asset" -f tag=v{版本}` | 4 个 Linux 产物附加 |
 | 10. 核对产物 | 对比上方 8 项清单 | 缺项补齐 |
 | 11. 通知用户 | 分发新版本 | 用户更新部署 |
+
+# 自动更新机制（v4.7.0+ 修复后）
+
+> 用户通过 GUI "Check for Updates" 或自动检查更新，下载新版本并重启。
+
+## 更新流程
+
+```
+用户点击更新 → check_for_update() → 下载 release asset → _apply_downloaded_update() → apply_update() → os._exit(0) → 新进程启动
+```
+
+## 关键文件与函数
+
+| 文件 | 函数 | 职责 |
+|------|------|------|
+| `src/updater.py` | `check_for_update()` | 查询 GitHub Releases API，403 时 fallback 到 redirect URL |
+| `src/updater.py` | `download_update()` | 下载 release asset（.zip）并验证 SHA256 |
+| `src/updater.py` | `_platform_asset_pattern()` | 返回当前平台的 asset 文件名模式（如 `-windows-x64.zip`） |
+| `src/updater_win.py` | `apply_update()` | Windows: rename 旧 exe → .old，copy 新 exe + _internal，启动新进程 |
+| `src/pyqt_gui.py` | `_apply_downloaded_update()` | GUI 入口：解压 zip → 调用 apply_update → 清理锁文件 → os._exit(0) |
+| `src/safe_io.py` | `file_lock()` | GUI 单实例锁，基于临时文件 + PID 检测 stale |
+
+## v4.7.0 修复的关键问题
+
+1. **乱码输出（Claude Code 模式）**：thinking 块在 `content_block_start` 中必须用空 thinking 字段，内容通过 `thinking_delta` 发送。`redacted_thinking` 类型用于不透明加密思维，不显示给用户。
+2. **自动更新死锁**：锁文件在 `os._exit(0)` 前必须手动删除（`finally` 块不会执行）。启动时预检 stale 锁（PID 不存在则立即删除）。默认超时从 0.2s 提升到 5.0s。
+3. **Asset 格式不匹配**：release asset 是 `.zip`（PyInstaller COLLECT 模式），不是单 `.exe`。`_platform_asset_pattern()` 必须返回 `-windows-x64.zip`，且下载后需要先解压 zip 找到 exe。
+
+## 发布 Asset 命名规则
+
+- **必须**：`SHTUCodeProxy-v{版本}-windows-x64.zip`（PyInstaller COLLECT 模式的 dist 目录打包）
+- **必须**：`SHA256SUMS.txt`（包含 zip 的 SHA256 校验和）
+- **禁止**：发布单个 `.exe` 文件作为 asset（COLLECT 模式需要 `_internal` 目录）
+
+## 构建与发布快速命令
+
+```powershell
+# 1. 更新版本号
+[System.IO.File]::WriteAllText("VERSION", "X.Y.Z`n", [System.Text.UTF8Encoding]::new($false))
+[System.IO.File]::WriteAllText("src/VERSION", "X.Y.Z`n", [System.Text.UTF8Encoding]::new($false))
+
+# 2. 构建（PyInstaller COLLECT 模式）
+cd C:\上海科技大学\脚本\shutucodeproxy
+Copy-Item SHTUCodeProxy.spec "SHTUCodeProxy-vX.Y.Z-windows-x64.spec" -Force
+python -m PyInstaller "SHTUCodeProxy-vX.Y.Z-windows-x64.spec" --clean --noconfirm
+
+# 3. 打包 zip + SHA256
+Compress-Archive -Path dist\SHTUCodeProxy -DestinationPath "dist\SHTUCodeProxy-vX.Y.Z-windows-x64.zip" -Force
+$hash = (Get-FileHash -Path "dist\SHTUCodeProxy-vX.Y.Z-windows-x64.zip" -Algorithm SHA256).Hash.ToLower()
+[System.IO.File]::WriteAllText("dist\SHA256SUMS.txt", "$hash  SHTUCodeProxy-vX.Y.Z-windows-x64.zip`n", [System.Text.UTF8Encoding]::new($false))
+
+# 4. Git 提交 + 推送 + Tag
+git add VERSION src/VERSION
+git commit -m "vX.Y.Z: ..."
+git tag vX.Y.Z
+git push origin main --tags
+
+# 5. 创建 GitHub Release
+gh release create vX.Y.Z "dist\SHTUCodeProxy-vX.Y.Z-windows-x64.zip" "dist\SHA256SUMS.txt" --title "vX.Y.Z" --notes-file release_notes.md
+```
 
 # Fix #001 记录
 
