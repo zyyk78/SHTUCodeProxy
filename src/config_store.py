@@ -104,6 +104,12 @@ class ModelConfig:
     supports_reasoning: bool = False
     enable_thinking: bool = False  # Send chat_template_kwargs: {enable_thinking: true} to upstream for vLLM models
 
+    def __post_init__(self):
+        # WHY: enable_thinking implies the model returns reasoning_content,
+        # so the proxy must also know to handle it as thinking blocks.
+        if self.enable_thinking:
+            self.supports_reasoning = True
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ModelConfig":
         model_id = str(data.get("model_id") or data.get("id") or DEFAULT_MODEL_ID).strip()
@@ -150,7 +156,7 @@ def default_supports_image(model_id: Any, upstream_model: Any = None) -> bool:
 
 def default_supports_reasoning(model_id: Any, upstream_model: Any = None) -> bool:
     model_text = f"{model_id or '' } {upstream_model or '' }".lower()
-    return "deepseek" in model_text or "glm" in model_text or "qwen" in model_text
+    return "deepseek" in model_text or "glm" in model_text or "qwen" in model_text or "gpt-5.5" in model_text
 
 
 def default_max_context_tokens(model_id: Any, upstream_model: Any = None) -> int:

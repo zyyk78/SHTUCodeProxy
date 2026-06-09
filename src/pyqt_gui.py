@@ -869,19 +869,15 @@ class IosProxyApp(QMainWindow):
         self.supports_audio_check.setObjectName("model_supports_audio_check")
         self.supports_video_check = QCheckBox("Video")
         self.supports_video_check.setObjectName("model_supports_video_check")
-        self.supports_reasoning_check = QCheckBox("Reasoning")
-        self.supports_reasoning_check.setObjectName("model_supports_reasoning_check")
-        self.supports_reasoning_check.setToolTip("Enable thinking/reasoning mode for models that support it")
         self.enable_thinking_check = QCheckBox("Thinking")
         self.enable_thinking_check.setObjectName("model_enable_thinking_check")
-        self.enable_thinking_check.setToolTip("Send enable_thinking parameter to upstream (vLLM models like DeepSeek Pro, GLM)")
+        self.enable_thinking_check.setToolTip("Enable reasoning/thinking mode. Auto-sends enable_thinking param for vLLM models (DeepSeek, GLM)")
         self.modality_checks = QWidget()
         modality_layout = QHBoxLayout(self.modality_checks)
         modality_layout.setContentsMargins(0, 0, 0, 0)
         modality_layout.addWidget(self.supports_image_check)
         modality_layout.addWidget(self.supports_audio_check)
         modality_layout.addWidget(self.supports_video_check)
-        modality_layout.addWidget(self.supports_reasoning_check)
         modality_layout.addWidget(self.enable_thinking_check)
         modality_layout.addStretch(1)
         for row, (label, widget) in enumerate((
@@ -1116,8 +1112,7 @@ class IosProxyApp(QMainWindow):
         self.supports_image_check.setChecked(bool(getattr(model, "supports_image", False)))
         self.supports_audio_check.setChecked(bool(getattr(model, "supports_audio", False)))
         self.supports_video_check.setChecked(bool(getattr(model, "supports_video", False)))
-        self.supports_reasoning_check.setChecked(bool(getattr(model, "supports_reasoning", False)))
-        self.enable_thinking_check.setChecked(bool(getattr(model, "enable_thinking", False)))
+        self.enable_thinking_check.setChecked(bool(getattr(model, "enable_thinking", False) or getattr(model, "supports_reasoning", False)))
 
     def on_api_format_changed(self, api_format: str) -> None:
         debug_log(f"api format changed value={api_format!r}")
@@ -1177,7 +1172,7 @@ class IosProxyApp(QMainWindow):
         old_model = self.config_data.models[self.selected_index]
         model.max_context_tokens = old_model.max_context_tokens
         model.stream_bridge = old_model.stream_bridge
-        model.supports_reasoning = self.supports_reasoning_check.isChecked()
+        model.supports_reasoning = self.enable_thinking_check.isChecked()
         model.enable_thinking = self.enable_thinking_check.isChecked()
         if not model.model_id or not model.base_url:
             self.error("Missing value", "Model ID and Base URL are required.")

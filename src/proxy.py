@@ -1046,8 +1046,10 @@ def sanitized_upstream_payload_for_model(payload: Dict[str, Any], model_config: 
         result = _strip_cache_control(result)
     # WHY: When model supports reasoning and thinking was requested, inject
     # chat_template_kwargs so vLLM-based upstreams enable reasoning mode.
+    # Only send for chat_completions format; Responses API (GPT-5.5 etc.) rejects it.
     if isinstance(result, dict) and result.pop("_reasoning_enabled", False):
-        result["chat_template_kwargs"] = {"enable_thinking": True}
+        if model_config.api_format == "chat_completions":
+            result["chat_template_kwargs"] = {"enable_thinking": True}
     return result
 
 
@@ -2418,7 +2420,7 @@ def responses_json_to_anthropic_message(payload: Dict[str, Any], model_config: M
     # redacted_thinking as fallback.
     has_real_thinking = False
     _reasoning_as_text_fallback = ""
-    _wants_thinking = thinking_requested(payload)
+    _wants_thinking = thinking_requested(payload) or getattr(model_config, 'supports_reasoning', False) or getattr(model_config, 'enable_thinking', False)
     for item in output:
         if not isinstance(item, dict):
             continue
@@ -3116,7 +3118,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             # WHY: When client did NOT request thinking, emit reasoning as
                             # regular text so it is not silently dropped (e.g. qwen-instruct,
                             # glm-chat with enable_thinking return all content in reasoning).
-                            _use_as_text = not thinking_requested(body)
+                            _use_as_text = not (thinking_requested(body) or getattr(model_config, 'supports_reasoning', False) or getattr(model_config, 'enable_thinking', False))
                             if _use_as_text:
                                 output_text_parts.append(reasoning_text)
                                 if not text_item_started:
@@ -3376,7 +3378,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     elif kind == "reasoning" and parsed:
                         reasoning_text = parsed.get("text", "")
                         if reasoning_text:
-                            _use_as_text = not thinking_requested(body)
+                            _use_as_text = not (thinking_requested(body) or getattr(model_config, 'supports_reasoning', False) or getattr(model_config, 'enable_thinking', False))
                             if _use_as_text:
                                 output_text_parts.append(reasoning_text)
                                 if not text_item_started:
@@ -3620,7 +3622,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             # When client did NOT request thinking, emit reasoning as regular
                             # text so it is not silently dropped (e.g. qwen-instruct, glm-chat
                             # with enable_thinking return all content in reasoning).
-                            _use_as_text = not thinking_requested(body)
+                            _use_as_text = not (thinking_requested(body) or getattr(model_config, 'supports_reasoning', False) or getattr(model_config, 'enable_thinking', False))
                             if _use_as_text:
                                 if not text_block_started:
                                     write_sse(self, "content_block_start", {
