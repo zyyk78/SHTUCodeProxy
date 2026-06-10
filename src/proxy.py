@@ -1923,10 +1923,6 @@ def extract_text_delta(event: Optional[str], data: str) -> Tuple[str, Optional[D
         # Some vLLM versions: {"detail": "error message", "type": "..."}
         if obj.get("detail") and isinstance(obj.get("detail"), str) and not obj.get("choices"):
             return "error", {"error": {"type": "upstream_error", "message": obj["detail"]}, "raw": obj}
-        # Chat completions error: {"error": {"message": "...", "type": "..."}}
-        err = obj.get("error")
-        if isinstance(err, dict) and err.get("message"):
-            return "error", obj
     return "ignore", obj
 
 def parse_tool_arguments(arguments: Any) -> Dict[str, Any]:
