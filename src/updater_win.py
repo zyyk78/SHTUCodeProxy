@@ -128,6 +128,7 @@ def apply_update(
     new_exe_path: Path,
     *,
     restart_proxy: bool = True,
+    source_dir: Optional[Path] = None,
 ) -> Tuple[bool, Optional[str]]:
     """Apply a downloaded update by replacing the running executable.
 
@@ -205,6 +206,26 @@ def apply_update(
                 except Exception:
                     pass
             return False, "Cannot copy new exe to " + str(exe) + ": " + str(e)
+
+        # Step 3.5: Copy _internal from onedir zip to installation directory
+        # WHY: When updating from onedir zip, the new exe needs _internal/
+        # next to it to load Python DLLs. We must copy _internal BEFORE
+        # starting the new exe, because PyInstaller onedir builds need it
+        # immediately at startup (unlike onefile builds which extract to temp).
+        # This also avoids Windows Defender blocking DLL extraction to %TEMP%.
+        if source_dir:
+            src_internal = source_dir / "_internal" if source_dir.is_dir() else None
+            if src_internal and src_internal.is_dir():
+                dest_internal = exe.parent / "_internal"
+                try:
+                    # WHY: dirs_exist_ok handles both fresh install (no _internal)
+                    # and update (existing _internal with locked DLLs from old process).
+                    # Locked files are left as-is; cleanup_after_update retries after
+                    # the old process exits.
+                    shutil.copytree(str(src_internal), str(dest_internal), dirs_exist_ok=True)
+                except Exception as e:
+                    # Best-effort: cleanup_after_update will retry after old process exits
+                    pass
 
         # Step 4: Write staging info for cleanup_after_update
         # WHY: We do NOT try to delete or move _internal/ here because

@@ -1503,6 +1503,7 @@ class IosProxyApp(QMainWindow):
         except Exception:
             pass
         # WHY: If the downloaded file is a zip, extract it first to get the exe.
+        source_dir = None
         new_path = Path(new_exe_path)
         if new_path.suffix.lower() == ".zip":
             import zipfile
@@ -1518,6 +1519,7 @@ class IosProxyApp(QMainWindow):
                     QMessageBox.warning(self, "Update Failed", "No SHTUCodeProxy.exe found in the downloaded zip archive.")
                     return
                 new_path = exe_candidates[0]
+                source_dir = new_path.parent
                 self.append_log(f"Extracted update exe: {new_path}")
             except Exception as e:
                 self.append_log(f"Update failed: Could not extract zip: {e}")
@@ -1527,7 +1529,7 @@ class IosProxyApp(QMainWindow):
             from updater_win import apply_update
         else:
             from updater_linux import apply_update
-        success, err = apply_update(new_path, restart_proxy=True)
+        success, err = apply_update(new_path, restart_proxy=True, source_dir=source_dir)
         if not success:
             self.append_log(f"Update apply failed: {err}")
             QMessageBox.warning(self, "Update Failed", f"Could not apply update:\n{err}")
