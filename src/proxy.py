@@ -1629,6 +1629,12 @@ def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: 
         messages.append({"role": "user", "content": input_items})
     elif isinstance(input_items, list):
         pending_tool_calls: Dict[str, Dict[str, Any]] = {}
+        deferred_visible: List[Dict[str, Any]] = []
+        def _flush_deferred() -> None:
+            nonlocal deferred_visible
+            if deferred_visible:
+                messages.extend(deferred_visible)
+                deferred_visible = []
         def _flush_pending() -> None:
             nonlocal pending_tool_calls
             if pending_tool_calls:
@@ -1636,11 +1642,13 @@ def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: 
                 pending_tool_calls = {}
         for item in input_items:
             if not isinstance(item, dict):
+                _flush_deferred()
                 _flush_pending()
                 messages.append({"role": "user", "content": str(item)})
                 continue
             item_type = item.get("type")
             if item_type == "function_call":
+                _flush_deferred()
                 call_id = item.get("call_id") or item.get("id") or f"call_proxy_{now_ms()}"
                 arguments = item.get("arguments", "")
                 if not isinstance(arguments, str):
@@ -1658,8 +1666,9 @@ def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: 
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": output_text})
                 if output_text:
                     visible_text = anthropic_tool_results_visible_text([{"tool_use_id": call_id, "content": output_text}])
-                    messages.append({"role": "user", "content": visible_text})
+                    deferred_visible.append({"role": "user", "content": visible_text})
                 continue
+            _flush_deferred()
             _flush_pending()
             role = item.get("role") or ("assistant" if item_type == "message" else "user")
             message_role = "system" if role == "developer" else role
@@ -1670,6 +1679,7 @@ def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: 
                 system_messages.append(message)
             else:
                 messages.append(message)
+        _flush_deferred()
         _flush_pending()
     else:
         messages.append({"role": "user", "content": ""})
