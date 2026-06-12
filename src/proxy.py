@@ -1399,22 +1399,26 @@ class ProxyHandler(BaseHTTPRequestHandler):
             payload["usage"] = done_payload["response"].get("usage") or payload["usage"]
         send_json(self, 200, payload)
 
-    def _send_anthropic_stream_error(self, error_message: str, text_block_started: bool, text_block_stopped: bool) -> None:
-        """Send an error as a proper Anthropic SSE stream ending sequence instead of a non-standard error event."""
+    def _send_anthropic_stream_error(self, error_message: str, text_block_started: bool, text_block_stopped: bool, next_index: int = 0) -> None:
+        """Send an error as a proper Anthropic SSE stream ending sequence instead of a non-standard error event.
+
+        next_index: the next available content_block index (after any pre-injected thinking blocks).
+                    Prevents index collision with earlier thinking blocks.
+        """
         if not text_block_started:
             write_sse(self, "content_block_start", {
                 "type": "content_block_start",
-                "index": 0,
+                "index": next_index,
                 "content_block": {"type": "text", "text": ""},
             })
             text_block_started = True
         if not text_block_stopped:
             write_sse(self, "content_block_delta", {
                 "type": "content_block_delta",
-                "index": 0,
+                "index": next_index,
                 "delta": {"type": "text_delta", "text": f"[Proxy Error] {error_message}"},
             })
-            write_sse(self, "content_block_stop", {"type": "content_block_stop", "index": 0})
+            write_sse(self, "content_block_stop", {"type": "content_block_stop", "index": next_index})
             text_block_stopped = True
         write_sse(self, "message_delta", {
             "type": "message_delta",
@@ -1572,7 +1576,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             except urllib.error.HTTPError as exc:
                 message = upstream_error_message(exc)
                 log_error(f"qwen bridge http error model={model_config.model_id} status={exc.code} body={message[:200]}")
-                self._send_anthropic_stream_error(message, text_block_started, text_block_stopped)
+                self._send_anthropic_stream_error(message, text_block_started, text_block_stopped, _thinking_block_index)
                 return
             except ValueError as exc:
                 if "stream_bridge empty" in str(exc):
@@ -1580,11 +1584,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     # Fall through to real streaming below - do NOT return
                 else:
                     log_error(f"qwen bridge error model={model_config.model_id} error={exc}")
-                    self._send_anthropic_stream_error(f"Qwen bridge error: {exc}", text_block_started, text_block_stopped)
+                    self._send_anthropic_stream_error(f"Qwen bridge error: {exc}", text_block_started, text_block_stopped, _thinking_block_index)
                     return
             except Exception as exc:
                 log_error(f"qwen bridge error model={model_config.model_id} error={exc}")
-                self._send_anthropic_stream_error(f"Qwen bridge error: {exc}", text_block_started, text_block_stopped)
+                self._send_anthropic_stream_error(f"Qwen bridge error: {exc}", text_block_started, text_block_stopped, _thinking_block_index)
                 return
 
         try:
@@ -1723,7 +1727,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             _err_msg = _orjson_dumps_str(parsed)[:500]
                         stream_error_message = _err_msg
                         log_error(f"upstream stream error model={model_config.model_id} error={_err_msg[:200]}")
-                        self._send_anthropic_stream_error(_err_msg, text_block_started, text_block_stopped)
+                        self._send_anthropic_stream_error(_err_msg, text_block_started, text_block_stopped, _thinking_block_index)
                         return
                     elif kind == "done":
                         done_payload = parsed
@@ -1754,11 +1758,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         return
                 except Exception as fallback_exc:
                     log_error(f"stream http error non-stream fallback failed model={model_config.model_id} error={fallback_exc}")
-            self._send_anthropic_stream_error(message, text_block_started, text_block_stopped)
+            self._send_anthropic_stream_error(message, text_block_started, text_block_stopped, _thinking_block_index)
             return
         except Exception as exc:
             log_error(f"upstream connection error model={model_config.model_id} format={model_config.api_format} error={exc}")
-            self._send_anthropic_stream_error(f"Upstream connection error: {exc}", text_block_started, text_block_stopped)
+            self._send_anthropic_stream_error(f"Upstream connection error: {exc}", text_block_started, text_block_stopped, _thinking_block_index)
             return
 
         output_text = "".join(output_text_parts)
@@ -1845,7 +1849,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # instead of a silent empty reply.
             if not output_text and not tool_calls and upstream_error_message_text:
                 log_error(f"anthropic empty stream with upstream error model={model_config.model_id} error={upstream_error_message_text[:200]}")
-                self._send_anthropic_stream_error(upstream_error_message_text, text_block_started, text_block_stopped)
+                self._send_anthropic_stream_error(upstream_error_message_text, text_block_started, text_block_stopped, _thinking_block_index)
                 return
             log_info(f"anthropic empty stream fallback model={model_config.model_id} chars={len(output_text)}")
             if output_text and not text_block_started:
