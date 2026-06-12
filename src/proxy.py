@@ -377,16 +377,19 @@ class ProxyHandler(BaseHTTPRequestHandler):
         self.send_header("access-control-allow-headers", "*")
         self.end_headers()
 
+    # 健康检查路径：不包含敏感信息，豁免鉴权
+    _HEALTH_PATHS = ("/", "/health", "/v1")
+
     def do_HEAD(self) -> None:
         if not self.check_ip():
             return
-        if not self.check_auth():
-            return
         path = self.route_path()
-        if path in ("/", "/health", "/v1"):
+        if path in self._HEALTH_PATHS:
             self.send_response(200)
             self.send_header("content-type", "application/json; charset=utf-8")
             self.end_headers()
+            return
+        if not self.check_auth():
             return
         self.send_response(404)
         self.end_headers()
@@ -394,12 +397,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if not self.check_ip():
             return
-        if not self.check_auth():
-            return
-        if self.route_path() in ("/", "/health", "/v1"):
+        path = self.route_path()
+        if path in self._HEALTH_PATHS:
             send_json(self, 200, {"ok": True, "service": "shtu-claude-proxy"})
             return
-        if self.route_path() in ("/v1/models", "/models"):
+        if not self.check_auth():
+            return
+        if path in ("/v1/models", "/models"):
             config = current_config()
             models = []
             for mc in config.models:
