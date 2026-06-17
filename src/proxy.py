@@ -125,7 +125,7 @@ from transformer import (
     responses_completed_payload, response_text_from_upstream_json,
     responses_error_payload, anthropic_error_message_payload,
     responses_unsupported_modalities_payload, responses_json_output_text,
-    responses_json_to_anthropic_message, extract_anthropic_usage,
+    responses_json_to_anthropic_message, extract_anthropic_usage, _to_anthropic_usage,
     _codex_emit_recovered_response,
 )
 
@@ -630,7 +630,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             ("content_block_start", {"type": "content_block_start", "index": _thinking_block_index, "content_block": {"type": "text", "text": ""}}),
             ("content_block_delta", {"type": "content_block_delta", "index": _thinking_block_index, "delta": {"type": "text_delta", "text": text}}),
             ("content_block_stop", {"type": "content_block_stop", "index": _thinking_block_index}),
-            ("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": max(1, len(text) // 4)}}),
+            ("message_delta", {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": estimate_text_tokens(text) if text else 0}}),
             ("message_stop", {"type": "message_stop"}),
         ])
         self.close_connection = True
@@ -1953,10 +1953,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if not response_usage and chat_stream_usage:
             response_usage = responses_usage_from_chat_usage(chat_stream_usage, 0, output_text)
         log_info(f"response done model={model_config.model_id} deltas={delta_count} chars={len(output_text)} tools={len(tool_calls)}{usage_cache_debug(response_usage)}")
+        delta_usage = _to_anthropic_usage(response_usage, estimate_anthropic_input_tokens(body), output_text) if response_usage else {"input_tokens": estimate_anthropic_input_tokens(body), "output_tokens": estimate_text_tokens(output_text) if output_text else 0}
         write_sse(self, "message_delta", {
             "type": "message_delta",
             "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-            "usage": {"input_tokens": estimate_anthropic_input_tokens(body), "output_tokens": max(1, len(output_text) // 4) if output_text else 0},
+            "usage": delta_usage,
         })
         write_sse(self, "message_stop", {"type": "message_stop"})
         self.close_connection = True
@@ -1989,7 +1990,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         _sr = anthropic_msg.get("stop_reason", "end_turn")
         if _sr == "max_tokens":
             _sr = "end_turn"  # WHY: 映射为 end_turn 让 Claude Code 继续处理已有输出
-        write_sse(self, "message_delta", {"type": "message_delta", "delta": {"stop_reason": _sr, "stop_sequence": None}, "usage": {"input_tokens": usage.get("input_tokens", 0), "output_tokens": usage.get("output_tokens", 0)}})
+        write_sse(self, "message_delta", {"type": "message_delta", "delta": {"stop_reason": _sr, "stop_sequence": None}, "usage": _to_anthropic_usage(usage, 0, "")})
         write_sse(self, "message_stop", {"type": "message_stop"})
         self.close_connection = True
 

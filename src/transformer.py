@@ -539,15 +539,13 @@ def _cjk_ratio_sample(text: str, sample_size: int = 512) -> float:
 def estimate_text_tokens(text: str) -> int:
     if not text:
         return 0
-    # 性能优化: CJK 字符约 1.5 字/token, ASCII 约 4 字符/token
-    # 原版 chars/4 对纯中文偏高 ~100%, 导致 max_tokens 不必要地缩减
+    # CJK 字符约 1.5 字/token (即 2/3 token/char), ASCII 约 4 字符/token (即 1/4 token/char)
+    # 加权: tokens ≈ cjk_chars * 2/3 + non_cjk_chars * 1/4
+    # 用分母 12 (LCM of 3,4) 避免浮点: tokens ≈ (cjk_chars * 8 + non_cjk_chars * 3 + 11) // 12
     ratio = _cjk_ratio_sample(text)
-    # CJK: ~1.5 char/token (即 2/3 token/char), non-CJK: ~4 char/token
-    # 加权: tokens ≈ len * (ratio * 2/3 + (1-ratio) * 1/4)
-    # 简化: tokens ≈ (cjk_chars * 2 + non_cjk_chars) / 4
     cjk_chars = int(len(text) * ratio)
     non_cjk_chars = len(text) - cjk_chars
-    return max(1, (cjk_chars * 2 + non_cjk_chars + 3) // 4)
+    return max(1, (cjk_chars * 8 + non_cjk_chars * 3 + 11) // 12)
 
 
 def estimate_value_tokens(value: Any) -> int:
@@ -1576,7 +1574,7 @@ def enable_chat_stream_usage(payload: Dict[str, Any]) -> None:
 def responses_usage_from_chat_usage(usage: Dict[str, Any], fallback_input_tokens: int, fallback_output_text: str) -> Dict[str, Any]:
     converted: Dict[str, Any] = {
         "input_tokens": int(usage.get("prompt_tokens") or usage.get("input_tokens") or fallback_input_tokens),
-        "output_tokens": int(usage.get("completion_tokens") or usage.get("output_tokens") or (max(1, len(fallback_output_text) // 4) if fallback_output_text else 0)),
+        "output_tokens": int(usage.get("completion_tokens") or usage.get("output_tokens") or (estimate_text_tokens(fallback_output_text) if fallback_output_text else 0)),
     }
     converted["total_tokens"] = int(usage.get("total_tokens") or converted["input_tokens"] + converted["output_tokens"])
     for key in ("cache_creation_input_tokens", "cache_read_input_tokens", "cached_tokens"):
@@ -2497,7 +2495,7 @@ def response_output_item_id(index: int = 0) -> str:
 
 
 def responses_usage(input_tokens: int, output_text: str) -> Dict[str, int]:
-    output_tokens = max(1, len(output_text) // 4) if output_text else 0
+    output_tokens = estimate_text_tokens(output_text)
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
@@ -2546,7 +2544,7 @@ def anthropic_error_message_payload(model_config: ModelConfig, message: str, inp
         "content": [{"type": "text", "text": message}],
         "stop_reason": "end_turn",
         "stop_sequence": None,
-        "usage": {"input_tokens": input_tokens, "output_tokens": max(1, len(message) // 4)},
+        "usage": {"input_tokens": input_tokens, "output_tokens": estimate_text_tokens(message) if message else 0},
     }
 
 
@@ -2648,29 +2646,41 @@ def responses_json_to_anthropic_message(payload: Dict[str, Any], model_config: M
         "content": content,
         "stop_reason": "tool_use" if any(part.get("type") == "tool_use" for part in content) else "end_turn",
         "stop_sequence": None,
-        "usage": {
-            "input_tokens": int(usage.get("input_tokens") or 0),
-            "output_tokens": int(usage.get("output_tokens") or (max(1, len(output_text) // 4) if output_text else 0)),
-        },
+        "usage": _to_anthropic_usage(usage, 0, output_text),
     }
 
 
+def _to_anthropic_usage(usage: Optional[Dict[str, Any]], fallback_input: int = 0, fallback_output_text: str = "") -> Dict[str, Any]:
+    if not isinstance(usage, dict):
+        return {"input_tokens": fallback_input, "output_tokens": estimate_text_tokens(fallback_output_text) if fallback_output_text else 0}
+    result: Dict[str, Any] = {
+        "input_tokens": int(usage.get("input_tokens") or usage.get("prompt_tokens") or fallback_input),
+        "output_tokens": int(usage.get("output_tokens") or usage.get("completion_tokens") or fallback_output),
+    }
+    for key in ("cache_creation_input_tokens", "cache_read_input_tokens"):
+        v = usage.get(key)
+        if v is not None:
+            result[key] = int(v)
+    if "cache_read_input_tokens" not in result:
+        ct = usage.get("cached_tokens")
+        if ct is not None:
+            result["cache_read_input_tokens"] = int(ct)
+    if "cache_read_input_tokens" not in result:
+        details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details")
+        if isinstance(details, dict) and details.get("cached_tokens") is not None:
+            result["cache_read_input_tokens"] = int(details["cached_tokens"])
+    return result
+
+
 def extract_anthropic_usage(done_payload: Optional[Dict[str, Any]], chat_stream_usage: Optional[Dict[str, Any]], text: str) -> Dict[str, Any]:
-    """Extract real usage from done_payload or chat_stream_usage, falling back to estimates."""
     if isinstance(done_payload, dict):
         response_obj = done_payload.get("response") if isinstance(done_payload.get("response"), dict) else done_payload
         usage = response_obj.get("usage") if isinstance(response_obj, dict) else None
         if isinstance(usage, dict):
-            return {
-                "input_tokens": int(usage.get("input_tokens") or 0),
-                "output_tokens": int(usage.get("output_tokens") or (max(1, len(text) // 4) if text else 0)),
-            }
+            return _to_anthropic_usage(usage, 0, text)
     if isinstance(chat_stream_usage, dict):
-        return {
-            "input_tokens": int(chat_stream_usage.get("prompt_tokens") or chat_stream_usage.get("input_tokens") or 0),
-            "output_tokens": int(chat_stream_usage.get("completion_tokens") or chat_stream_usage.get("output_tokens") or (max(1, len(text) // 4) if text else 0)),
-        }
-    return {"input_tokens": 0, "output_tokens": max(1, len(text) // 4) if text else 0}
+        return _to_anthropic_usage(chat_stream_usage, 0, text)
+    return {"input_tokens": 0, "output_tokens": estimate_text_tokens(text) if text else 0}
 
 
 
