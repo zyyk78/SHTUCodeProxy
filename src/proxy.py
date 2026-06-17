@@ -1759,8 +1759,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         self._send_anthropic_stream_error(_err_msg, text_block_started, text_block_stopped, _thinking_block_index)
                         return
                     elif kind == "done":
-                        done_payload = parsed
-                        break
+                        # WHY: Do NOT break on "done". With OpenAI
+                        # stream_options.include_usage=true the usage chunk
+                        # arrives AFTER the finish_reason chunk (and after
+                        # response.completed for Responses API). Continuing
+                        # the loop lets us capture trailing usage via the
+                        # `kind == "usage"` branch above. The [DONE] sentinel
+                        # yields ("done", None) — we skip the overwrite to
+                        # preserve the finish_reason payload collected earlier.
+                        if parsed is not None:
+                            done_payload = parsed
         except urllib.error.HTTPError as exc:
             message = upstream_error_message(exc)
             log_error(f"upstream http error model={model_config.model_id} status={exc.code} body={message[:200]}")
@@ -1953,7 +1961,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
             })
             write_sse(self, "content_block_stop", {"type": "content_block_stop", "index": block_index})
         stop_reason = stop_reason_from_done(done_payload, tool_calls)
-        response_usage = done_payload.get("response", {}).get("usage") if isinstance(done_payload, dict) and isinstance(done_payload.get("response"), dict) else None
+        response_usage = None
+        if isinstance(done_payload, dict):
+            response_obj = done_payload.get("response")
+            if isinstance(response_obj, dict) and isinstance(response_obj.get("usage"), dict):
+                response_usage = response_obj["usage"]
+            # WHY: OpenAI chat_completions parser attaches usage directly to the
+            # done payload when the final usage chunk carries a non-empty choices
+            # array (e.g. finish_reason + usage). Normalize via the same chat-to-
+            # responses converter used for stream-only usage so the log shows
+            # in=/out= AND message_delta.usage carries real values (not estimates).
+            if not isinstance(response_usage, dict) and isinstance(done_payload.get("usage"), dict):
+                response_usage = responses_usage_from_chat_usage(done_payload["usage"], 0, output_text)
         if not response_usage and chat_stream_usage:
             response_usage = responses_usage_from_chat_usage(chat_stream_usage, 0, output_text)
         log_info(f"response done model={model_config.model_id} deltas={delta_count} chars={len(output_text)} tools={len(tool_calls)}{usage_summary(response_usage)}{usage_cache_debug(response_usage)}")
