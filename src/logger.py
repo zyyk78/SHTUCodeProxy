@@ -187,3 +187,16 @@ def usage_cache_debug(usage: Any) -> str:
         return ""
     # 性能优化: 用 orjson 替代 json
     return " cache_usage=" + _orjson_dumps_str(present)
+
+
+def usage_summary(usage: Any) -> str:
+    if not isinstance(usage, dict):
+        return ""
+    parts = []
+    inp = usage.get("input_tokens")
+    if isinstance(inp, (int, float)):
+        parts.append(f"in={int(inp)}")
+    out = usage.get("output_tokens")
+    if isinstance(out, (int, float)):
+        parts.append(f"out={int(out)}")
+    return (" " + " ".join(parts)) if parts else ""

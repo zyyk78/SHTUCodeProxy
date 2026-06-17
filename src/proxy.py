@@ -33,7 +33,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from logger import (
     log, log_error, log_info, log_debug,
     now_ms, _orjson_dumps, _orjson_dumps_str, _orjson_loads,
-    _HAS_ORJSON, json_dumps_compact, usage_cache_debug,
+    _HAS_ORJSON, json_dumps_compact, usage_cache_debug, usage_summary,
     register_active_config,
 )
 
@@ -1256,7 +1256,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             completed["usage"] = done_payload["response"].get("usage") or completed["usage"]
         elif chat_stream_usage:
             completed["usage"] = responses_usage_from_chat_usage(chat_stream_usage, completed["usage"]["input_tokens"], output_text)
-        log_info(f"response done model={model_config.model_id} chars={len(output_text)} tools={len(tool_calls)}{usage_cache_debug(completed.get('usage'))}")
+        log_info(f"response done model={model_config.model_id} chars={len(output_text)} tools={len(tool_calls)}{usage_summary(completed.get('usage'))}{usage_cache_debug(completed.get('usage'))}")
         emit("response.completed", {"response": completed})
         write_data_sse(self, "[DONE]")
         self.close_connection = True
@@ -1309,7 +1309,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     except Exception as retry_exc:
                         log_error(f"WARNING responses non-stream retry failed model={model_config.model_id} error={retry_exc}")
                 if payload.get("output"):
-                    log_info(f"response done model={model_config.model_id} non_stream=true{usage_cache_debug(payload.get('usage'))}")
+                    log_info(f"response done model={model_config.model_id} non_stream=true{usage_summary(payload.get('usage'))}{usage_cache_debug(payload.get('usage'))}")
                     send_json(self, 200, payload)
                     return
                 log_error(f"WARNING responses non-stream empty after retries, falling back to streaming model={model_config.model_id}")
@@ -1956,7 +1956,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         response_usage = done_payload.get("response", {}).get("usage") if isinstance(done_payload, dict) and isinstance(done_payload.get("response"), dict) else None
         if not response_usage and chat_stream_usage:
             response_usage = responses_usage_from_chat_usage(chat_stream_usage, 0, output_text)
-        log_info(f"response done model={model_config.model_id} deltas={delta_count} chars={len(output_text)} tools={len(tool_calls)}{usage_cache_debug(response_usage)}")
+        log_info(f"response done model={model_config.model_id} deltas={delta_count} chars={len(output_text)} tools={len(tool_calls)}{usage_summary(response_usage)}{usage_cache_debug(response_usage)}")
         delta_usage = _to_anthropic_usage(response_usage, estimate_anthropic_input_tokens(body), output_text) if response_usage else {"input_tokens": estimate_anthropic_input_tokens(body), "output_tokens": estimate_text_tokens(output_text) if output_text else 0}
         write_sse(self, "message_delta", {
             "type": "message_delta",
@@ -2011,7 +2011,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 log_error(f"upstream error model={model_config.model_id} message={upstream_msg}")
                 raise ValueError(f"Upstream rejected: {upstream_msg}")
             if isinstance(payload.get("output"), list):
-                log_info(f"response done model={model_config.model_id} non_stream=true{usage_cache_debug(payload.get('usage'))}")
+                log_info(f"response done model={model_config.model_id} non_stream=true{usage_summary(payload.get('usage'))}{usage_cache_debug(payload.get('usage'))}")
                 send_json(self, 200, responses_json_to_anthropic_message(payload, model_config))
                 return
             if isinstance(payload.get("choices"), list):
@@ -2036,7 +2036,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 if converted.get("output"):
                     if thinking_requested(body): converted["_thinking_requested"] = True
                     anthropic_msg = responses_json_to_anthropic_message(converted, model_config)
-                    log_info(f"response done model={model_config.model_id} non_stream=true{usage_cache_debug(converted.get('usage'))}")
+                    log_info(f"response done model={model_config.model_id} non_stream=true{usage_summary(converted.get('usage'))}{usage_cache_debug(converted.get('usage'))}")
                     send_json(self, 200, anthropic_msg)
                     return
                 log_error(f"WARNING non-stream empty after retries, falling back to streaming model={model_config.model_id}")
