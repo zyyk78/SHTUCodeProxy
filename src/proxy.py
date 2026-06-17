@@ -1468,7 +1468,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 "content": [],
                 "stop_reason": None,
                 "stop_sequence": None,
-                "usage": {"input_tokens": estimate_anthropic_input_tokens(body), "output_tokens": 0},
+                # WHY: LiteLLM pattern — emit zeros in message_start; real values arrive
+                # in message_delta. Setting cache_creation/cache_read to 0 signals to
+                # Claude Code that prompt caching is supported, which is required for
+                # its auto-compact to function correctly.
+                "usage": {"input_tokens": 0, "output_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
             },
         })
 
