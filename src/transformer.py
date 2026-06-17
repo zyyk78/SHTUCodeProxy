@@ -705,6 +705,8 @@ def apply_auto_cache_control(payload: Dict[str, Any]) -> int:
         return 0
     if isinstance(payload.get("messages"), list):
         return apply_auto_cache_control_to_chat_payload(payload)
+    if isinstance(payload.get("input"), list):
+        return apply_auto_cache_control_to_responses_payload(payload)
     return 0
 
 
@@ -970,12 +972,41 @@ def _strip_cache_control(value: Any) -> Any:
     return value
 
 
+def _strip_bing_grounding(value: Any) -> Any:
+    """Recursively remove Bing Search grounding features (platform policy: disabled).
+
+    Strips:
+      - tools with type "bing_grounding" (Chat Completions / Responses API)
+      - data_sources entries with type "azure_grounding" (Chat Completions API)
+    """
+    if isinstance(value, dict):
+        result = {k: _strip_bing_grounding(v) for k, v in value.items()}
+        if "data_sources" in result and isinstance(result["data_sources"], list):
+            filtered = [ds for ds in result["data_sources"] if not (isinstance(ds, dict) and ds.get("type") == "azure_grounding")]
+            if len(filtered) < len(result["data_sources"]):
+                log("stripped azure_grounding from data_sources (platform policy)")
+            result["data_sources"] = filtered
+            if not filtered:
+                del result["data_sources"]
+        return result
+    if isinstance(value, list):
+        filtered = []
+        for item in value:
+            if isinstance(item, dict) and item.get("type") == "bing_grounding":
+                log("stripped bing_grounding tool (platform policy)")
+                continue
+            filtered.append(_strip_bing_grounding(item))
+        return filtered
+    return value
+
+
 def sanitized_upstream_payload_for_model(payload: Dict[str, Any], model_config: ModelConfig) -> Dict[str, Any]:
     result = sanitized_upstream_value_for_model(payload, model_config) if isinstance(payload, dict) else payload
     # WHY: cache_control is Anthropic-specific; no upstream API supports it.
     # Leaving it in causes empty streams (GPT-5.5 responses) or errors.
     if isinstance(result, dict):
         result = _strip_cache_control(result)
+        result = _strip_bing_grounding(result)
     # WHY: When model supports reasoning and thinking was requested, inject
     # chat_template_kwargs so vLLM-based upstreams enable reasoning mode.
     # Only send for chat_completions format; Responses API (GPT-5.5 etc.) rejects it.
@@ -1839,6 +1870,45 @@ def normalize_upstream_url(upstream_url: str, api_format: str) -> str:
 def upstream_error_message(exc: urllib.error.HTTPError) -> str:
     error_body = exc.read().decode("utf-8", errors="replace")
     return f"Upstream HTTP {exc.code}: {error_body}"
+
+
+def upstream_error_details(exc: urllib.error.HTTPError) -> Dict[str, Any]:
+    """Parse upstream HTTP error into a structured error dict for response.failed.
+
+    WHY: upstream_error_message() flattens the error into a string, losing the
+    error type. Claude Code uses the error type to decide UI behavior (e.g.
+    "invalid_request_error" for context overflow shows a specific message).
+    Without the correct type, Claude Code treats all upstream errors as generic
+    api_error, causing confusing "context" errors in the frontend.
+    """
+    error_body = ""
+    try:
+        error_body = exc.read().decode("utf-8", errors="replace")
+    except Exception:
+        pass
+    # Try to parse structured error from upstream
+    try:
+        parsed = _orjson_loads(error_body)
+        if isinstance(parsed, dict):
+            err = parsed.get("error")
+            if isinstance(err, dict) and err.get("message"):
+                return {"type": err.get("type", "api_error"), "message": err["message"]}
+            if parsed.get("message"):
+                return {"type": parsed.get("type", "api_error"), "message": parsed["message"]}
+    except Exception:
+        pass
+    # Fallback: classify by status code + body keywords
+    err_type = "api_error"
+    msg = error_body or f"Upstream HTTP {exc.code}"
+    if exc.code == 400:
+        err_type = "invalid_request_error"
+    elif exc.code == 429:
+        err_type = "rate_limit_error"
+    elif exc.code == 401 or exc.code == 403:
+        err_type = "authentication_error"
+    if "context" in msg.lower() and ("exceed" in msg.lower() or "maximum" in msg.lower() or "too long" in msg.lower()):
+        err_type = "invalid_request_error"
+    return {"type": err_type, "message": msg}
 
 
 def open_upstream(payload: Dict[str, Any], auth_token: str, upstream_url: str, timeout: int, api_format: str = "responses") -> urllib.response.addinfourl:

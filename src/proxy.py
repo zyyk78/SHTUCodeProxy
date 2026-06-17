@@ -104,7 +104,7 @@ from transformer import (
     responses_request_to_chat_completions, responses_request_to_model_upstream,
     needs_conversion, clamp_max_tokens_in_body,
     # Upstream
-    normalize_upstream_url, upstream_error_message, open_upstream, iter_sse_lines,
+    normalize_upstream_url, upstream_error_message, upstream_error_details, open_upstream, iter_sse_lines,
     # SSE events
     chat_tool_call_payloads, tool_call_kind_from_payloads, extract_text_delta,
     # Tool arguments
@@ -697,14 +697,28 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 if stream and _response_is_sse(response):
                     # 直接中继 SSE 流
                     send_sse_headers(self)
-                    while True:
-                        try:
-                            raw = response.readline()
-                        except socket.timeout as exc:
-                            raise TimeoutError("Timed out while waiting for upstream SSE data") from exc
-                        if not raw:
-                            break
-                        self.wfile.write(raw)
+                    try:
+                        while True:
+                            try:
+                                raw = response.readline()
+                            except socket.timeout as exc:
+                                raise TimeoutError("Timed out while waiting for upstream SSE data") from exc
+                            if not raw:
+                                break
+                            self.wfile.write(raw)
+                    except (ConnectionResetError, BrokenPipeError, OSError) as conn_exc:
+                        # WHY: 上游 (如 MiniMax) 在流式传输中可能主动断连
+                        # (Errno 104 Connection reset by peer), 此时已向客户端
+                        # 写入部分 SSE 数据, 无法再返回 HTTP 错误, 只能发送
+                        # SSE error 事件通知客户端流异常终止.
+                        log_error(f"passthrough stream connection lost model={model_config.model_id} error={conn_exc}")
+                        if not self.wfile.closed:
+                            try:
+                                err_event = f"event: error\ndata: {{\"type\": \"error\", \"error\": {{\"type\": \"api_error\", \"message\": \"Upstream connection lost: {conn_exc}\"}}}}\n\n"
+                                self.wfile.write(err_event.encode("utf-8"))
+                                self.wfile.flush()
+                            except Exception:
+                                pass
                     self.wfile.flush()
                     self.close_connection = True
                 else:
@@ -1003,8 +1017,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.close_connection = True
                 return
             except urllib.error.HTTPError as exc:
-                message = upstream_error_message(exc)
-                emit("response.failed", {"response": {"id": request_id, "status": "failed", "error": {"type": "api_error", "message": message}}})
+                err_details = upstream_error_details(exc)
+                log_error(f"codex stream_bridge upstream error model={model_config.model_id} status={exc.code} type={err_details.get('type')}")
+                emit("response.failed", {"response": {"id": request_id, "status": "failed", "error": err_details}})
                 write_data_sse(self, "[DONE]")
                 self.close_connection = True
                 return
@@ -1077,8 +1092,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         done_payload = parsed
                         break
         except urllib.error.HTTPError as exc:
-            message = upstream_error_message(exc)
-            log_error(f"codex upstream http error model={model_config.model_id} status={exc.code} body={message[:200]}")
+            err_details = upstream_error_details(exc)
+            log_error(f"codex upstream http error model={model_config.model_id} status={exc.code} type={err_details.get('type')} body={err_details.get('message','')[:200]}")
             # WHY: GLM and other Chat Completions upstreams may reject streaming requests
             # (e.g. when auto_cache_control modifies message content format) but accept
             # the same payload as non-streaming. Retry once before failing.
@@ -1104,7 +1119,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         return
                 except Exception as fallback_exc:
                     log_error(f"codex stream http error non-stream fallback failed model={model_config.model_id} error={fallback_exc}")
-            emit("response.failed", {"response": {"id": request_id, "status": "failed", "error": {"type": "api_error", "message": message}}})
+            emit("response.failed", {"response": {"id": request_id, "status": "failed", "error": err_details}})
             write_data_sse(self, "[DONE]")
             self.close_connection = True
             return
@@ -1125,16 +1140,21 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # WHY: Check for upstream error in done_payload and retry response
             # before falling back to a generic error message.
             codex_upstream_error = ""
+            codex_upstream_error_type = "api_error"
             if isinstance(done_payload, dict):
                 raw_obj = done_payload.get("raw", done_payload)
                 if isinstance(raw_obj, dict):
                     err = raw_obj.get("error")
                     if isinstance(err, dict) and err.get("message"):
                         codex_upstream_error = err["message"]
+                        if err.get("type"):
+                            codex_upstream_error_type = err["type"]
                     elif isinstance(err, str) and err:
                         codex_upstream_error = err
                     elif raw_obj.get("object") == "error" and raw_obj.get("message"):
                         codex_upstream_error = raw_obj["message"]
+                        if raw_obj.get("type"):
+                            codex_upstream_error_type = raw_obj["type"]
                     elif raw_obj.get("detail") and isinstance(raw_obj.get("detail"), str):
                         codex_upstream_error = raw_obj["detail"]
             retry_payload = dict(upstream_payload)
@@ -1149,10 +1169,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     err = fallback_payload.get("error")
                     if isinstance(err, dict) and err.get("message"):
                         codex_upstream_error = codex_upstream_error or err["message"]
-                        log_error(f"codex stream retry returned error model={model_config.model_id} error={err['message'][:200]}")
+                        if err.get("type") and codex_upstream_error_type == "api_error":
+                            codex_upstream_error_type = err["type"]
+                        log_error(f"codex stream retry returned error model={model_config.model_id} type={codex_upstream_error_type} error={err['message'][:200]}")
                     elif fallback_payload.get("object") == "error" and fallback_payload.get("message"):
                         codex_upstream_error = codex_upstream_error or fallback_payload["message"]
-                        log_error(f"codex stream retry returned error model={model_config.model_id} error={fallback_payload['message'][:200]}")
+                        if fallback_payload.get("type") and codex_upstream_error_type == "api_error":
+                            codex_upstream_error_type = fallback_payload["type"]
+                        log_error(f"codex stream retry returned error model={model_config.model_id} type={codex_upstream_error_type} error={fallback_payload['message'][:200]}")
                     elif fallback_payload.get("detail") and isinstance(fallback_payload.get("detail"), str):
                         codex_upstream_error = codex_upstream_error or fallback_payload["detail"]
                         log_error(f"codex stream retry returned error model={model_config.model_id} detail={fallback_payload['detail'][:200]}")
@@ -1168,15 +1192,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     output_text = responses_json_output_text(converted.get("output", []))
                 log_info(f"codex empty stream fallback model={model_config.model_id} chars={len(output_text)}")
             except urllib.error.HTTPError as retry_http_exc:
-                retry_body = retry_http_exc.read().decode("utf-8", errors="replace")
-                retry_msg = f"HTTP {retry_http_exc.code}: {retry_body[:300]}"
-                codex_upstream_error = codex_upstream_error or retry_msg
-                log_error(f"codex stream retry http error model={model_config.model_id} {retry_msg}")
+                retry_err = upstream_error_details(retry_http_exc)
+                codex_upstream_error = codex_upstream_error or retry_err.get("message", "")
+                codex_upstream_error_type = retry_err.get("type", "api_error")
+                log_error(f"codex stream retry http error model={model_config.model_id} type={codex_upstream_error_type} {retry_err.get('message','')[:200]}")
             except Exception as exc:
                 log_error(f"codex empty stream fallback failed model={model_config.model_id} error={exc}")
         if not output_text and not tool_calls:
             error_msg = codex_upstream_error or "Upstream completed without assistant text or tool calls"
-            emit("response.failed", {"response": {"id": request_id, "status": "failed", "error": {"type": "api_error", "message": error_msg}}})
+            error_type = codex_upstream_error_type if codex_upstream_error else "api_error"
+            emit("response.failed", {"response": {"id": request_id, "status": "failed", "error": {"type": error_type, "message": error_msg}}})
             write_data_sse(self, "[DONE]")
             self.close_connection = True
             return
