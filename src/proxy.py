@@ -9,25 +9,18 @@
 from __future__ import annotations
 
 import argparse
-import ast
-import copy
 import os
-import re
-import shlex
-import subprocess
 import sys
 import time
 import traceback
 import urllib.error
 import urllib.request
-import uuid
 import socket
 import ssl
 import ipaddress
-from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # 日志模块
 from logger import (
@@ -41,7 +34,6 @@ from logger import (
 from transformer import (
     # 常量
     VISIBLE_TEXT_TRUNCATE_LIMIT, VISIBLE_TEXT_SAMPLE_CHARS,
-    DEFAULT_UPSTREAM_URL, DEFAULT_MODEL, ANTHROPIC_VERSION,
     # DSML/PSEUDO 正则
     DSML_OPEN_RE, DSML_CLOSE_RE, DSML_TOOL_CALLS_CLOSE_RE,
     DSML_OPEN_PREFIXES, DSML_TOOL_CALLS_CLOSE_PREFIXES,
@@ -129,7 +121,6 @@ from transformer import (
     _codex_emit_recovered_response,
 )
 
-from platform_utils import app_dir
 from config_store import (
     CLAUDE_MODEL_ALIASES, AppConfig, ModelConfig,
     config_path, load_config,
@@ -475,7 +466,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             send_json(self, 200, {
                 "id": route_path.split("/responses/")[-1].split("/")[0],
                 "object": "response",
-                "created_at": int(__import__("time").time()),
+                "created_at": int(time.time()),
                 "status": "completed",
                 "model": "unknown",
                 "output": [],
@@ -1038,8 +1029,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         if text:
                             if _reasoning_code_open:
                                 _reasoning_code_open = False
-                                emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": "\n````\n\n"})
-                                output_text_parts.append("\n````\n\n")
+                                emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": "\n```\n\n"})
+                                output_text_parts.append("\n```\n\n")
                             output_text_parts.append(text)
                             if not text_item_started:
                                 text_item_started = True
@@ -1052,22 +1043,20 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             # WHY: When client did NOT request thinking, emit reasoning as
                             # regular text so it is not silently dropped (e.g. qwen-instruct,
                             # glm-chat with enable_thinking return all content in reasoning).
-                            _use_as_text = True  # WHY: Always emit reasoning as text (with 🤔 prefix) so all clients can see it
-                            if _use_as_text:
-                                # WHY: Prepend 🤔 marker to reasoning so users can distinguish
-                                # thinking from the actual answer in any client (Codex, Claude Code, etc.)
-                                _reasoning_prefix = "🤔 Thinking\n````\n"
-                                if not _reasoning_code_open:
-                                    output_text_parts.append(_reasoning_prefix)
-                                _reasoning_code_open = True
-                                output_text_parts.append(reasoning_text)
-                                if not text_item_started:
-                                    text_item_started = True
-                                    emit("response.output_item.added", {"output_index": 0, "item": {"id": message_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})
-                                    emit("response.content_part.added", {"item_id": message_id, "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": ""}})
-                                    if _reasoning_prefix:
-                                        emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": _reasoning_prefix})
-                                emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": reasoning_text})
+                            # WHY: Prepend 🤔 marker to reasoning so users can distinguish
+                            # thinking from the actual answer in any client (Codex, Claude Code, etc.)
+                            _reasoning_prefix = "🤔 Thinking\n```\n"
+                            if not _reasoning_code_open:
+                                output_text_parts.append(_reasoning_prefix)
+                            _reasoning_code_open = True
+                            output_text_parts.append(reasoning_text)
+                            if not text_item_started:
+                                text_item_started = True
+                                emit("response.output_item.added", {"output_index": 0, "item": {"id": message_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})
+                                emit("response.content_part.added", {"item_id": message_id, "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": ""}})
+                                if _reasoning_prefix:
+                                    emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": _reasoning_prefix})
+                            emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": reasoning_text})
                     elif kind in ("tool_call", "tool_call_delta", "tool_calls", "tool_calls_delta") and parsed:
                         merge_tool_call_payloads(tool_calls, parsed)
                     elif kind == "text_done" and parsed and parsed.get("text"):
@@ -1218,8 +1207,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if output_text:
             if _reasoning_code_open:
                 _reasoning_code_open = False
-                emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": "\n````\n\n"})
-                output_text_parts.append("\n````\n\n")
+                emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": "\n```\n\n"})
+                output_text_parts.append("\n```\n\n")
             if not text_item_started:
                 emit("response.output_item.added", {"output_index": 0, "item": {"id": message_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})
                 emit("response.content_part.added", {"item_id": message_id, "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": ""}})
@@ -1374,22 +1363,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     elif kind == "reasoning" and parsed:
                         reasoning_text = parsed.get("text", "")
                         if reasoning_text:
-                            _use_as_text = True  # WHY: Always emit reasoning as text (with 🤔 prefix) so all clients can see it
-                            if _use_as_text:
-                                # WHY: Prepend 🤔 marker to reasoning so users can distinguish
-                                # thinking from the actual answer in any client (Codex, Claude Code, etc.)
-                                _reasoning_prefix = "🤔 Thinking\n````\n"
-                                if not _reasoning_code_open:
-                                    output_text_parts.append(_reasoning_prefix)
-                                _reasoning_code_open = True
-                                output_text_parts.append(reasoning_text)
-                                if not text_item_started:
-                                    text_item_started = True
-                                    emit("response.output_item.added", {"output_index": 0, "item": {"id": message_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})
-                                    emit("response.content_part.added", {"item_id": message_id, "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": ""}})
-                                    if _reasoning_prefix:
-                                        emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": _reasoning_prefix})
-                                emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": reasoning_text})
+                            reasoning_parts.append(reasoning_text)
                     elif kind == "done":
                         done_payload = parsed
                         break
@@ -1636,9 +1610,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             write_sse(self, "content_block_delta", {
                                 "type": "content_block_delta",
                                 "index": _thinking_block_index,
-                                "delta": {"type": "text_delta", "text": "\n````\n\n"},
+                                "delta": {"type": "text_delta", "text": "\n```\n\n"},
                             })
-                            output_text_parts.append("\n````\n\n")
+                            output_text_parts.append("\n```\n\n")
                         if not text_block_started:
                             # WHY: Close thinking block before starting text block.
                             # Anthropic SSE requires blocks to be properly nested:
@@ -1668,11 +1642,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             # When client did NOT request thinking, emit reasoning as regular
                             # text so it is not silently dropped (e.g. qwen-instruct, glm-chat
                             # with enable_thinking return all content in reasoning).
-                            _use_as_text = not thinking_requested(body)  # WHY: When client requests thinking, emit as thinking block so Claude Code renders it incrementally; otherwise emit as text with 🤔 prefix
-                            if _use_as_text:
-                                # WHY: Prepend 🤔 marker to reasoning so users can distinguish
-                                # thinking from the actual answer in any client
-                                _reasoning_prefix = "🤔 Thinking\n````\n"
+                            if not thinking_requested(body):
+                                # WHY: When client did NOT request thinking, emit reasoning as
+                                # text with 🤔 prefix so it is not silently dropped
+                                _reasoning_prefix = "🤔 Thinking\n```\n"
                                 if not _reasoning_code_open:
                                     output_text_parts.append(_reasoning_prefix)
                                 _reasoning_code_open = True
@@ -1933,9 +1906,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
             write_sse(self, "content_block_delta", {
                 "type": "content_block_delta",
                 "index": _thinking_block_index,
-                "delta": {"type": "text_delta", "text": "\n````\n"},
+                "delta": {"type": "text_delta", "text": "\n```\n"},
             })
-            output_text_parts.append("\n````\n")
+            output_text_parts.append("\n```\n")
         if text_block_started and not text_block_stopped:
             write_sse(self, "content_block_stop", {"type": "content_block_stop", "index": _thinking_block_index})
             text_block_stopped = True

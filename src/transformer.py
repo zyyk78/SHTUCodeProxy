@@ -16,7 +16,6 @@ import shlex
 import subprocess
 import sys
 import time
-import traceback
 import urllib.error
 import urllib.request
 import uuid
@@ -26,23 +25,17 @@ from urllib.parse import urlparse
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from logger import (
-    log, log_error, log_info, log_debug,
+    log, log_error, log_info,
     now_ms, _orjson_dumps, _orjson_dumps_str, _orjson_loads,
-    _HAS_ORJSON, json_dumps_compact, usage_cache_debug,
+    _HAS_ORJSON, json_dumps_compact,
 )
-from platform_utils import app_dir
 from config_store import (
     CLAUDE_MODEL_ALIASES, AppConfig, ModelConfig,
-    config_path, load_config,
 )
 
 # 性能优化: 集中可调参数
 VISIBLE_TEXT_TRUNCATE_LIMIT = int(os.getenv("SHTU_VISIBLE_TRUNCATE", "2000"))
 VISIBLE_TEXT_SAMPLE_CHARS = max(100, VISIBLE_TEXT_TRUNCATE_LIMIT // 2)
-
-DEFAULT_UPSTREAM_URL = "https://genaiapi.shanghaitech.edu.cn/api/v1/response"
-DEFAULT_MODEL = "GPT-5.5"
-ANTHROPIC_VERSION = "2023-06-01"
 
 DSML_OPEN_RE = re.compile(r"<\s*[|｜]DSML[|｜](?:tool_calls|invoke|parameter)\b", re.IGNORECASE)
 DSML_CLOSE_RE = re.compile(r"</\s*[|｜]DSML[|｜](?:tool_calls|invoke|parameter)\s*>", re.IGNORECASE)
@@ -2655,7 +2648,7 @@ def _to_anthropic_usage(usage: Optional[Dict[str, Any]], fallback_input: int = 0
         return {"input_tokens": fallback_input, "output_tokens": estimate_text_tokens(fallback_output_text) if fallback_output_text else 0}
     result: Dict[str, Any] = {
         "input_tokens": int(usage.get("input_tokens") or usage.get("prompt_tokens") or fallback_input),
-        "output_tokens": int(usage.get("output_tokens") or usage.get("completion_tokens") or fallback_output),
+        "output_tokens": int(usage.get("output_tokens") or usage.get("completion_tokens") or (estimate_text_tokens(fallback_output_text) if fallback_output_text else 0)),
     }
     for key in ("cache_creation_input_tokens", "cache_read_input_tokens"):
         v = usage.get(key)
