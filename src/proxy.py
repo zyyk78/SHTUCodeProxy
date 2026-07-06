@@ -94,7 +94,7 @@ from transformer import (
     # Truncation
     _truncate_visible_text,
     responses_request_to_chat_completions, responses_request_to_model_upstream,
-    needs_conversion, clamp_max_tokens_in_body,
+    needs_conversion,
     # Upstream
     normalize_upstream_url, upstream_error_message, upstream_error_details, open_upstream, iter_sse_lines,
     # SSE events
@@ -650,11 +650,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         WHY: 对于非 genaiapi.shanghaitech.edu.cn 的上游 (如 api.anthropic.com),
         上游本身就支持 Anthropic/Responses 原生格式, 无需转换.
-        仅保留 max_tokens 裁剪以防止 "exceeds context length" 错误.
         """
         stream = request_stream_enabled(body, model_config.default_stream if hasattr(model_config, 'default_stream') else True)
-        # 仅做 max_tokens 裁剪, 不做格式转换
-        payload = clamp_max_tokens_in_body(dict(body), model_config)
+        payload = dict(body)
         # 移除 proxy 内部标记
         payload.pop("_thinking_requested", None)
         payload.pop("_reasoning_enabled", None)
