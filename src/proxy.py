@@ -1484,6 +1484,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
         text_block_started = False
         thinking_block_started = False
         text_block_stopped = False
+        # ponytail: track the actual text block index so close/stream-error use the right index
+        # even when reasoning blocks interleaved before/after the text block on a shared counter.
+        text_block_index = 0
         done_payload: Optional[Dict[str, Any]] = None
         chat_stream_usage: Optional[Dict[str, Any]] = None
         thinking_state: Dict[str, Any] = {"in_thinking": False}
@@ -1531,6 +1534,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     # Fall through to real streaming below
                     raise ValueError("stream_bridge empty, use real streaming")
                 # The rest of the stream_bridge SSE emission
+                # ponytail: stream_bridge emits a fresh Anthropic message (no streaming interleaving),
+                # so text_block_index is still 0 and _thinking_block_index only reflects pre-injected
+                # placeholder thinking blocks (0 or 1). enumerate start = next free slot.
                 for block_index, block in enumerate(anthropic_msg.get("content", []), _thinking_block_index):
                     block_type = block.get("type", "text")
                     # WHY: Anthropic protocol requires thinking blocks to have empty thinking
@@ -1619,9 +1625,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             if thinking_block_started:
                                 write_sse(self, "content_block_stop", {"type": "content_block_stop", "index": _thinking_block_index - 1})
                                 thinking_block_started = False
+                            text_block_index = _thinking_block_index
                             write_sse(self, "content_block_start", {
                                 "type": "content_block_start",
-                                "index": _thinking_block_index,
+                                "index": text_block_index,
                                 "content_block": {"type": "text", "text": ""},
                             })
                             text_block_started = True
@@ -1629,7 +1636,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         delta_count += 1
                         write_sse(self, "content_block_delta", {
                             "type": "content_block_delta",
-                            "index": _thinking_block_index,
+                            "index": text_block_index,
                             "delta": {"type": "text_delta", "text": text},
                         })
                     elif kind == "reasoning" and parsed:
@@ -1648,28 +1655,33 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                     output_text_parts.append(_reasoning_prefix)
                                 _reasoning_code_open = True
                                 if not text_block_started:
+                                    text_block_index = _thinking_block_index
                                     write_sse(self, "content_block_start", {
                                         "type": "content_block_start",
-                                        "index": _thinking_block_index,
+                                        "index": text_block_index,
                                         "content_block": {"type": "text", "text": ""},
                                     })
                                     text_block_started = True
                                     if _reasoning_prefix:
                                         write_sse(self, "content_block_delta", {
                                             "type": "content_block_delta",
-                                            "index": _thinking_block_index,
+                                            "index": text_block_index,
                                             "delta": {"type": "text_delta", "text": _reasoning_prefix},
                                         })
                                 output_text_parts.append(reasoning_text)
                                 delta_count += 1
                                 write_sse(self, "content_block_delta", {
                                     "type": "content_block_delta",
-                                    "index": _thinking_block_index,
+                                    "index": text_block_index,
                                     "delta": {"type": "text_delta", "text": reasoning_text},
                                 })
                             else:
                                 reasoning_parts.append(reasoning_text)
                                 if not thinking_block_started:
+                                    # ponytail: if text block already occupied this slot
+                                    # (text came before reasoning), skip past it.
+                                    if text_block_started and text_block_index == _thinking_block_index:
+                                        _thinking_block_index += 1
                                     thinking_block_started = True
                                     write_sse(self, "content_block_start", {
                                         "type": "content_block_start",
@@ -1692,9 +1704,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         if not output_text_parts and not text_block_started:
                             fallback_text = filter_thinking_text_delta(parsed["text"], thinking_state)
                             if fallback_text:
+                                text_block_index = _thinking_block_index
                                 write_sse(self, "content_block_start", {
                                     "type": "content_block_start",
-                                    "index": _thinking_block_index,
+                                    "index": text_block_index,
                                     "content_block": {"type": "text", "text": ""},
                                 })
                                 text_block_started = True
@@ -1702,7 +1715,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                 delta_count += 1
                                 write_sse(self, "content_block_delta", {
                                     "type": "content_block_delta",
-                                    "index": _thinking_block_index,
+                                    "index": text_block_index,
                                     "delta": {"type": "text_delta", "text": fallback_text},
                                 })
                     elif kind == "usage" and parsed and isinstance(parsed.get("usage"), dict):
@@ -1862,15 +1875,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
             log_info(f"anthropic empty stream fallback model={model_config.model_id} chars={len(output_text)}")
             if output_text and not text_block_started:
                 # Fallback recovered text - emit content_block events
+                text_block_index = _thinking_block_index
                 write_sse(self, "content_block_start", {
                     "type": "content_block_start",
-                    "index": _thinking_block_index,
+                    "index": text_block_index,
                     "content_block": {"type": "text", "text": ""},
                 })
                 text_block_started = True
                 write_sse(self, "content_block_delta", {
                     "type": "content_block_delta",
-                    "index": _thinking_block_index,
+                    "index": text_block_index,
                     "delta": {"type": "text_delta", "text": output_text},
                 })
         # WHY: When thinking was requested but upstream only returned reasoning with no
@@ -1883,16 +1897,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
             if thinking_block_started:
                 write_sse(self, "content_block_stop", {"type": "content_block_stop", "index": _thinking_block_index - 1})
                 thinking_block_started = False
+            text_block_index = _thinking_block_index
             write_sse(self, "content_block_start", {
                 "type": "content_block_start",
-                "index": _thinking_block_index,
+                "index": text_block_index,
                 "content_block": {"type": "text", "text": ""},
             })
             text_block_started = True
             output_text_parts.append(reasoning_text)
             write_sse(self, "content_block_delta", {
                 "type": "content_block_delta",
-                "index": _thinking_block_index,
+                "index": text_block_index,
                 "delta": {"type": "text_delta", "text": reasoning_text},
             })
         # WHY: Close the thinking block if it was started during streaming
@@ -1903,14 +1918,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
             _reasoning_code_open = False
             write_sse(self, "content_block_delta", {
                 "type": "content_block_delta",
-                "index": _thinking_block_index,
+                "index": text_block_index,
                 "delta": {"type": "text_delta", "text": "\n```\n"},
             })
             output_text_parts.append("\n```\n")
         if text_block_started and not text_block_stopped:
-            write_sse(self, "content_block_stop", {"type": "content_block_stop", "index": _thinking_block_index})
+            write_sse(self, "content_block_stop", {"type": "content_block_stop", "index": text_block_index})
             text_block_stopped = True
-        next_index = (1 if text_block_started else 0) + _thinking_block_index
+        next_index = max((text_block_index + 1) if text_block_started else 0, _thinking_block_index)
         # WHY: Filter out empty padding entries from merge_tool_call() that have
         # no real id/name. Without this filter, padding entries are emitted as
         # phantom "tool" calls that Claude Code cannot handle (Bug #1).
