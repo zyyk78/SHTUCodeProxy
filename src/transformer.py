@@ -1005,27 +1005,6 @@ def sanitized_upstream_payload_for_model(payload: Dict[str, Any], model_config: 
         if model_config.api_format == "chat_completions":
             result["chat_template_kwargs"] = {"enable_thinking": True}
 
-    # 自动裁剪 max_tokens 避免 "exceeds context length" 错误
-    # WHY: Claude Code 请求 max_tokens=32000, 但如果 input 已占 96001 tokens,
-    # deepseek-pro (128k context) 会拒绝: 96001 + 32000 = 128001 > 128000
-    # 解决: 估算 input tokens, 裁剪 max_tokens = max_context_tokens - input_tokens - MARGIN
-    # MARGIN: 估算值可能偏低 (chars/4 对 CJK 不够准), 留 5% 安全边距 (至少 512 tokens)
-    if isinstance(result, dict) and getattr(model_config, "max_context_tokens", 0) > 0:
-        max_ctx = model_config.max_context_tokens
-        max_out_key = "max_tokens" if "max_tokens" in result else ("max_output_tokens" if "max_output_tokens" in result else None)
-        if max_out_key:
-            requested_max = result.get(max_out_key, 0)
-            if isinstance(requested_max, int) and requested_max > 0:
-                # 估算当前 input tokens
-                est_input = estimate_anthropic_input_tokens(result) if result.get("messages") else estimate_value_tokens(result.get("input"))
-                # 5% 安全边距 (至少 512 tokens), 防止估算偏低导致上游拒绝
-                margin = max(512, int(est_input * 0.05))
-                allowed_max = max(1, max_ctx - est_input - margin)
-                if requested_max > allowed_max:
-                    old_max = requested_max
-                    result[max_out_key] = allowed_max
-                    log_info(f"clamped max_tokens: {old_max} -> {allowed_max} (context={max_ctx}, est_input={est_input}, margin={margin})")
-
     return result
 
 
@@ -1825,30 +1804,6 @@ def needs_conversion(base_url: str) -> bool:
         False = 直接透传 (原生 Anthropic/Responses 格式)
     """
     return "genaiapi.shanghaitech.edu.cn" in base_url
-
-
-def clamp_max_tokens_in_body(body: Dict[str, Any], model_config: ModelConfig) -> Dict[str, Any]:
-    """仅对 body 执行 max_tokens 裁剪, 不做任何格式转换.
-
-    WHY: 透传模式下仍需防止 "exceeds context length" 错误.
-    """
-    if not isinstance(body, dict) or getattr(model_config, "max_context_tokens", 0) <= 0:
-        return body
-    max_ctx = model_config.max_context_tokens
-    max_out_key = None
-    for key in ("max_tokens", "max_output_tokens"):
-        if key in body and isinstance(body.get(key), int) and body[key] > 0:
-            max_out_key = key
-            break
-    if max_out_key:
-        est_input = estimate_anthropic_input_tokens(body) if body.get("messages") else estimate_value_tokens(body.get("input"))
-        margin = max(512, int(est_input * 0.05))
-        allowed_max = max(1, max_ctx - est_input - margin)
-        if body[max_out_key] > allowed_max:
-            old_max = body[max_out_key]
-            body[max_out_key] = allowed_max
-            log_info(f"passthrough clamped {max_out_key}: {old_max} -> {allowed_max} (context={max_ctx}, est_input={est_input}, margin={margin})")
-    return body
 
 
 def normalize_upstream_url(upstream_url: str, api_format: str) -> str:

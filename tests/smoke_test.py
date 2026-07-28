@@ -82,6 +82,12 @@ def make_config(tmpdir: Path) -> AppConfig:
         update_check_interval_hours=24,
         update_include_prerelease=False,
         update_auto_download=False,
+        auth_key="",
+        log_level=-1,
+        ssl_cert="",
+        ssl_key="",
+        allowed_ips=[],
+        denied_ips=[],
         models=[model],
     )
 
