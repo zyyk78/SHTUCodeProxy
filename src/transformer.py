@@ -2004,9 +2004,15 @@ def extract_text_delta(event: Optional[str], data: str) -> Tuple[str, Optional[D
         # Return as separate "reasoning" kind so it can be emitted as an
         # Anthropic thinking block instead of plain text.
         reasoning = (delta.get("reasoning_content") if delta else None) or (delta.get("reasoning") if delta else None) or ""
-        if reasoning:
-            return "reasoning", {"text": reasoning}
         text = (delta.get("content") if delta else None) or ""
+        if reasoning:
+            # WHY: GLM 在思考转正文的过渡 delta 里常把正文首句塞进同一个 content 字段
+            # (与最后一点 reasoning_content 并存)。若此处直接 return，content 会被吞掉,
+            # 表现为"思考之后第一句话内容不全"。把 content 一并带出, 由 proxy 补发为正文。
+            payload: Dict[str, Any] = {"text": reasoning}
+            if text:
+                payload["content"] = text
+            return "reasoning", payload
         if text:
             return "delta", {"text": text}
         if choice.get("finish_reason"):

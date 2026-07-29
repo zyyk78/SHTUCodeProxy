@@ -113,6 +113,7 @@ from transformer import (
     inject_redacted_thinking_to_content, inject_redacted_thinking_to_responses_output,
     strip_encrypted_content_from_reasoning, strip_encrypted_content_from_output,
     _REDACTED_THINKING_DATA,
+    _THINKING_PLACEHOLDER_TEXT,
     response_id, response_output_item_id, responses_usage,
     responses_completed_payload, response_text_from_upstream_json,
     responses_error_payload, anthropic_error_message_payload,
@@ -1082,6 +1083,21 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                     emit("response.content_part.added", {"item_id": message_id, "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": ""}})
                                     emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": _reasoning_prefix})
                                 emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": reasoning_text})
+                        # WHY: GLM 过渡 delta 把正文首句塞进同一 content 字段
+                        # (extract_text_delta 已带在 parsed["content"])。闭合 reasoning
+                        # code block 并把这段正文作为 message text 补发, 否则首句丢失。
+                        co_text = parsed.get("content") if isinstance(parsed, dict) else None
+                        if co_text:
+                            if _reasoning_code_open:
+                                _reasoning_code_open = False
+                                emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": "\n```\n\n"})
+                                output_text_parts.append("\n```\n\n")
+                            if not text_item_started:
+                                text_item_started = True
+                                emit("response.output_item.added", {"output_index": 0, "item": {"id": message_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})
+                                emit("response.content_part.added", {"item_id": message_id, "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": ""}})
+                            output_text_parts.append(co_text)
+                            emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": co_text})
                     elif kind in ("tool_call", "tool_call_delta", "tool_calls", "tool_calls_delta") and parsed:
                         merge_tool_call_payloads(tool_calls, parsed)
                     elif kind == "text_done" and parsed and parsed.get("text"):
@@ -1389,6 +1405,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         reasoning_text = parsed.get("text", "")
                         if reasoning_text:
                             reasoning_parts.append(reasoning_text)
+                        # WHY: GLM 过渡 delta 把正文首句塞进同一 content 字段
+                        # (extract_text_delta 已带在 parsed["content"])，补收进 text_parts。
+                        co_text = parsed.get("content") if isinstance(parsed, dict) else None
+                        if co_text:
+                            text_parts.append(co_text)
                     elif kind == "done":
                         done_payload = parsed
                         break
@@ -1721,6 +1742,30 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                     "index": _thinking_block_index - 1,
                                     "delta": {"type": "thinking_delta", "thinking": reasoning_text},
                                 })
+                                # WHY: GLM 过渡 delta 把正文首句塞进同一 content 字段,
+                                # extract_text_delta 已将其带在 parsed["content"] 里。
+                                # 关闭 thinking block 并把这段正文补发为 text, 否则首句丢失。
+                                co_text = parsed.get("content") if isinstance(parsed, dict) else None
+                                if co_text:
+                                    if thinking_block_started:
+                                        write_sse(self, "content_block_stop", {"type": "content_block_stop", "index": _thinking_block_index - 1})
+                                        thinking_block_started = False
+                                    if _reasoning_code_open:
+                                        _reasoning_code_open = False
+                                    text_block_index = _thinking_block_index
+                                    write_sse(self, "content_block_start", {
+                                        "type": "content_block_start",
+                                        "index": text_block_index,
+                                        "content_block": {"type": "text", "text": ""},
+                                    })
+                                    text_block_started = True
+                                    output_text_parts.append(co_text)
+                                    delta_count += 1
+                                    write_sse(self, "content_block_delta", {
+                                        "type": "content_block_delta",
+                                        "index": text_block_index,
+                                        "delta": {"type": "text_delta", "text": co_text},
+                                    })
                     elif kind in ("tool_call", "tool_call_delta", "tool_calls", "tool_calls_delta") and parsed:
                         merge_tool_call_payloads(tool_calls, parsed)
                     elif kind == "text_done" and parsed and parsed.get("text"):
