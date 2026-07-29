@@ -3,19 +3,25 @@
 职责: 日志级别控制、日志写入、orjson 封装、JSON 工具函数
 
 日志级别:
-  -1 = 不启用（不写日志文件，仅 stderr）
    0 = 静默（不输出任何日志）
    1 = 仅错误
    2 = 信息（默认）
    3 = 详细
+
+注: config.json 未设置 log_level 时 (默认 -1) 视为未配置, 自动 fallback 到
+     SHTU_LOG_LEVEL 环境变量或默认 2. 想完全关闭日志请显式设 log_level=0 或
+     SHTU_LOG_LEVEL=0 (设 SHTU_LOG_LEVEL=-1 也完全静默, 与 0 等价).
 
 优先级: config.json log_level > 环境变量 SHTU_LOG_LEVEL > 默认值 2
 """
 
 from __future__ import annotations
 
+import logging
+import logging.handlers
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -73,7 +79,9 @@ def json_dumps_compact(value: Any) -> str:
 # 日志级别
 # ---------------------------------------------------------------------------
 
-LOG_FILE_MAX_BYTES = 5 * 1024 * 1024
+LOG_FILE_MAX_BYTES = 1 * 1024 * 1024  # ponytail: 1MB — 触发更频繁但保留 3 个备份 = 4MB 历史窗口
+LOG_FILE_BACKUP_COUNT = 3  # ponytail: 3 个 .1/.2/.3 备份，足够覆盖一次事故复盘
+LOG_FILE_NAME = "proxy.log"
 
 # 模块级缓存: current_config() 尚未就绪时使用
 _LOG_LEVEL = int(os.getenv("SHTU_LOG_LEVEL", "2"))
@@ -96,11 +104,16 @@ def current_config() -> AppConfig:
 
 
 def _get_log_level() -> int:
-    """动态获取日志级别, 优先 config.json, 其次环境变量, 默认 2."""
+    """动态获取日志级别, 优先 config.json, 其次环境变量, 默认 2.
+
+    config.json log_level=-1 视为 "未配置", fallback 到环境变量 (与 AppConfig.default 注释一致).
+    ponytail: 顺手修 pre-existing bug — 原代码把 -1 当合法值直接返回,
+    导致未配置部署永远只写 stderr 不写文件, 跟 docstring 承诺的 fallback 行为不符.
+    """
     try:
         cfg = current_config()
         cl = getattr(cfg, "log_level", -1)
-        if isinstance(cl, int) and -1 <= cl <= 3:
+        if isinstance(cl, int) and 0 <= cl <= 3:
             return cl
     except Exception:
         pass
@@ -119,24 +132,69 @@ def now_ms() -> int:
 # 日志写入
 # ---------------------------------------------------------------------------
 
+# ponytail: 用 stdlib logging + RotatingFileHandler 替换手写轮转
+# 自带锁（线程安全）、原子 rename（process crash 不丢日志）、延迟写（不用每条 open/close）。
+# 阈值改 1MB×3 备份（原 5MB×1 太激进 — 一旦轮转就把所有老日志 unlink 掉）。
+# 公开 API (log_info/log_error/log_debug/log) 签名不变，proxy.py / transformer.py 零改动。
+
+_logger = logging.getLogger("shtu_proxy")
+_logger.setLevel(logging.DEBUG)  # 由 handler 决定是否过滤
+_logger.propagate = False  # 不要冒泡到 root logger
+_handlers_lock = threading.Lock()
+_handlers_installed = False
+
+
+def _build_handlers() -> list[logging.Handler]:
+    handlers: list[logging.Handler] = []
+
+    class _DynamicStderrHandler(logging.StreamHandler):
+        """每次 emit 时取当前 sys.stderr, 让测试/调用方可重定向 stderr. ponytail: 避免 handler 锁死初始 stderr."""
+
+        def emit(self, record):
+            self.stream = sys.stderr
+            super().emit(record)
+
+    # stderr — 永远保留（除非用户在 SHTU_STDERR_LOG=0 显式关）
+    if os.getenv("SHTU_STDERR_LOG", "1") != "0":
+        stderr_h = _DynamicStderrHandler()
+        stderr_h.setFormatter(logging.Formatter("%(message)s"))
+        handlers.append(stderr_h)
+    # file — log_level=-1 时跳过
+    if _get_log_level() != -1:
+        try:
+            target_dir = app_dir()
+            target_dir.mkdir(parents=True, exist_ok=True)
+            target = target_dir / LOG_FILE_NAME
+            file_h = logging.handlers.RotatingFileHandler(
+                target,
+                maxBytes=LOG_FILE_MAX_BYTES,
+                backupCount=LOG_FILE_BACKUP_COUNT,
+                encoding="utf-8",
+                delay=True,  # ponytail: 启动时不创建空文件
+            )
+            file_h.setFormatter(logging.Formatter("%(message)s"))
+            handlers.append(file_h)
+        except Exception:
+            pass  # disk full / permission denied — stderr 还在
+    return handlers
+
+
+def _ensure_handlers() -> None:
+    global _handlers_installed
+    if _handlers_installed:
+        return
+    with _handlers_lock:
+        if _handlers_installed:
+            return
+        for h in _build_handlers():
+            _logger.addHandler(h)
+        _handlers_installed = True
+
+
 def _write_log(line: str) -> None:
-    """底层日志写入，-1 时不写文件仅 stderr。"""
-    print(line, file=sys.stderr, flush=True)
-    if _get_log_level() == -1:
-        return  # -1: 不启用日志文件
-    try:
-        target_dir = app_dir()
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / "proxy.log"
-        if target.exists() and target.stat().st_size > LOG_FILE_MAX_BYTES:
-            backup = target_dir / "proxy.log.1"
-            if backup.exists():
-                backup.unlink()
-            target.rename(backup)
-        with target.open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
-    except Exception:
-        pass
+    """底层日志写入。handlers 各自按初始化时配置决定是否接收, 本函数不做级别过滤."""
+    _ensure_handlers()
+    _logger.debug(line)  # 全部走 DEBUG，handler 端无级别过滤，由调用方 log_*/log_error 控制
 
 
 def log(message: str) -> None:
@@ -148,7 +206,7 @@ def log(message: str) -> None:
 
 
 def log_error(message: str) -> None:
-    """仅 log_level>=1 时输出 (错误级别)。"""
+    """仅 log_level>=1 时输出 (错误级别)。log_level=-1 表示完全关闭 (包括 stderr)."""
     if _get_log_level() < 1:
         return
     line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"

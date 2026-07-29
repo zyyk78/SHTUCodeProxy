@@ -303,8 +303,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         api_key = self.headers.get("x-api-key", "")
         if api_key.strip() == auth_key:
             return True
-        # 认证失败
-        log_error(f"auth rejected from {self.client_address[0]}")
+        # 认证失败: 不打日志 (本地/探测噪音太大, 客户端已收到 401 响应)
         send_json(self, 401, {
             "type": "error",
             "error": {"type": "authentication_error", "message": "Invalid or missing API key. Set auth_key in config.json and provide via Authorization: Bearer <key> or x-api-key header."},
@@ -720,13 +719,29 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     self.end_headers()
                     self.wfile.write(raw)
         except urllib.error.HTTPError as exc:
-            error_body = exc.read().decode("utf-8", errors="replace")
-            log_error(f"passthrough upstream error model={model_config.model_id} status={exc.code} body={error_body[:200]}")
+            # ponytail: passthrough must relay bytes verbatim — never orjson.loads + dumps
+            # the upstream body, it changes field ordering / number precision and violates
+            # the transparency invariant. Forward raw bytes, status, and content-type as-is.
+            # 透传上游 status + 原始 bytes (不解析, 避免 orjson 往返改动字段精度)
+            raw = exc.read()
+            log_error(f"passthrough upstream error model={model_config.model_id} status={exc.code} body={raw[:200]!r}")
             try:
-                error_data = _orjson_loads(error_body)
-                send_json(self, exc.code, error_data)
-            except Exception:
-                send_json(self, exc.code, {"type": "error", "error": {"type": "api_error", "message": error_body[:500]}})
+                self.send_response(exc.code)
+                self.send_header("content-type", exc.headers.get("content-type", "application/json; charset=utf-8"))
+                self.send_header("content-length", str(len(raw)))
+                self.send_header("access-control-allow-origin", "*")
+                self.end_headers()
+                self.wfile.write(raw)
+            except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+                pass
+        except (socket.timeout, TimeoutError) as exc:
+            # 上游超时: 真实语义是 504, 不要降级成 502
+            log_error(f"passthrough timeout model={model_config.model_id} error={exc}")
+            if not self.wfile.closed:
+                try:
+                    send_json(self, 504, {"type": "error", "error": {"type": "api_error", "message": f"Upstream timeout: {exc}"}})
+                except Exception:
+                    pass
         except Exception as exc:
             log_error(f"passthrough error model={model_config.model_id} error={exc}")
             if not self.wfile.closed:

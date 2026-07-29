@@ -13,6 +13,7 @@ config.json
 .env
 *.local.json
 *.log
+update_check_cache.json
 
 # Build outputs
 build/
