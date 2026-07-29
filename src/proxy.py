@@ -1053,23 +1053,35 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     elif kind == "reasoning" and parsed:
                         reasoning_text = parsed.get("text", "")
                         if reasoning_text:
-                            # WHY: When client did NOT request thinking, emit reasoning as
-                            # regular text so it is not silently dropped (e.g. qwen-instruct,
-                            # glm-chat with enable_thinking return all content in reasoning).
-                            # WHY: Prepend 🤔 marker to reasoning so users can distinguish
-                            # thinking from the actual answer in any client (Codex, Claude Code, etc.)
-                            _reasoning_prefix = "🤔 Thinking\n```\n"
-                            if not _reasoning_code_open:
-                                output_text_parts.append(_reasoning_prefix)
-                            _reasoning_code_open = True
-                            output_text_parts.append(reasoning_text)
-                            if not text_item_started:
-                                text_item_started = True
-                                emit("response.output_item.added", {"output_index": 0, "item": {"id": message_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})
-                                emit("response.content_part.added", {"item_id": message_id, "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": ""}})
-                                if _reasoning_prefix:
+                            if thinking_requested(body):
+                                # WHY: Client requested thinking — route upstream reasoning into a
+                                # real reasoning item (collapsible thinking block), NOT into the
+                                # message body. reasoning_parts is joined at stream end (below)
+                                # and emitted as response.reasoning_summary_text.done + a
+                                # reasoning output_item. This mirrors the Anthropic Messages path.
+                                if not reasoning_item_started:
+                                    reasoning_item_started = True
+                                    reasoning_item_id = response_output_item_id(1)
+                                    emit("response.output_item.added", {"output_index": 0, "item": {"id": reasoning_item_id, "type": "reasoning", "status": "in_progress", "summary": []}})
+                                reasoning_parts.append(reasoning_text)
+                                emit("response.reasoning_summary_text.delta", {"item_id": reasoning_item_id, "output_index": 0, "delta": reasoning_text})
+                            else:
+                                # WHY: Client did NOT request thinking — still surface reasoning
+                                # as regular text so it is not silently dropped (qwen-instruct,
+                                # glm-chat with enable_thinking return all content in reasoning).
+                                # Prepend 🤔 marker so users can distinguish thinking from the
+                                # answer in clients that have no thinking UI (Codex, etc.).
+                                _reasoning_prefix = "🤔 Thinking\n```\n"
+                                if not _reasoning_code_open:
+                                    output_text_parts.append(_reasoning_prefix)
+                                _reasoning_code_open = True
+                                output_text_parts.append(reasoning_text)
+                                if not text_item_started:
+                                    text_item_started = True
+                                    emit("response.output_item.added", {"output_index": 0, "item": {"id": message_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})
+                                    emit("response.content_part.added", {"item_id": message_id, "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": ""}})
                                     emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": _reasoning_prefix})
-                            emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": reasoning_text})
+                                emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": reasoning_text})
                     elif kind in ("tool_call", "tool_call_delta", "tool_calls", "tool_calls_delta") and parsed:
                         merge_tool_call_payloads(tool_calls, parsed)
                     elif kind == "text_done" and parsed and parsed.get("text"):
