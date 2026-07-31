@@ -1047,6 +1047,32 @@ def strip_thinking_markup(text: str) -> str:
     return cleaned.strip()
 
 
+# WHY: proxy 自身把 reasoning 包成 "🤔 Thinking\n```...```\n" 文本块下发；这些块
+# 进对话历史后模型常原样模仿该格式回吐进 content 字段。split_thinking_text_block
+# 把开头那段 🤔 代码块拆回 (reasoning, remaining)，让各响应路径复用已有 reasoning
+# 路由（→ thinking 块 / reasoning item）而非当作正文转发。
+# 容错 3~4 反引号（transformer 用 4、proxy 用 3）；只认开头的块，避免误伤正文里
+# 偶现的同名代码块。返回的 remaining 已 strip。
+_THINKING_BLOCK_RE = re.compile(
+    r"\s*🤔\s*Thinking\s*\n`{3,4}\s*\n(.*?)\n`{3,4}\s*(?:\n+|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def split_thinking_text_block(text: str) -> Tuple[str, str]:
+    """Split a leading "🤔 Thinking" code block off text.
+
+    Returns (reasoning, remaining). If no leading thinking block is found,
+    returns ("", text) unchanged so callers fall back to the text path.
+    """
+    if not text:
+        return "", ""
+    match = _THINKING_BLOCK_RE.match(text)
+    if not match:
+        return "", text
+    return match.group(1).strip(), text[match.end():].strip()
+
+
 def strip_markdown_json_fence(text: str) -> str:
     stripped = text.strip()
     match = re.fullmatch(r"```(?:json|JSON)?\s*(.*?)\s*```", stripped, flags=re.DOTALL)
@@ -2349,6 +2375,14 @@ def chat_completion_json_to_responses(payload: Dict[str, Any], model: str, input
         if think_match:
             reasoning_text = think_match.group(1).strip()
     output_text = strip_thinking_markup(output_text)
+    # WHY: 模型可能把 reasoning 以 "🤔 Thinking\n```...```" 文本块的形式塞进 content
+    # 字段返回（常是它模仿 proxy 上一轮下发的格式）。content 里已有的 reasoning_content
+    # 优先；没有时再从 content 头部的 🤔 代码块里拆出 reasoning，避免当作正文转发。
+    if output_text and not reasoning_text:
+        _block_reasoning, _block_rest = split_thinking_text_block(output_text)
+        if _block_reasoning:
+            reasoning_text = _block_reasoning
+            output_text = _block_rest
     # WHY: When upstream returns reasoning but no content (e.g. qwen-instruct, glm-chat
     # with enable_thinking), the actual response text is in the reasoning field.
     # Use reasoning as the text output when content is empty, so the user gets
@@ -2360,9 +2394,14 @@ def chat_completion_json_to_responses(payload: Dict[str, Any], model: str, input
         output_text = ""
     output_text, pseudo_tool_calls = parse_pseudo_function_calls(output_text, tools)
     output: List[Dict[str, Any]] = []
-    # WHY: Merge reasoning into text with 🤔 prefix so all clients (Codex,
-    # Claude Code) can see the reasoning. No separate reasoning item needed.
-    if reasoning_text and output_text:
+    # WHY: Client requested thinking → route reasoning into a real reasoning item
+    # (collapsible thinking block) instead of merging into text. Otherwise keep the
+    # 🤔-prefixed text merge so clients without thinking UI (Codex) still see it.
+    if reasoning_text and thinking_requested(payload):
+        output.append({"id": response_output_item_id(), "type": "reasoning", "status": "completed", "summary": [{"type": "summary_text", "text": reasoning_text}]})
+        if output_text:
+            output.append({"id": response_output_item_id(), "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": output_text}]})
+    elif reasoning_text and output_text:
         combined = "🤔 Thinking\n````\n" + reasoning_text + "\n````\n\n" + output_text
         output.append({"id": response_output_item_id(), "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": combined}]})
     elif reasoning_text:
@@ -2537,7 +2576,11 @@ def responses_json_to_anthropic_message(payload: Dict[str, Any], model_config: M
     # redacted_thinking as fallback.
     has_real_thinking = False
     _reasoning_as_text_fallback = ""
-    _wants_thinking = False  # WHY: Reasoning always emitted as text, never as thinking block
+    # WHY: Route reasoning into a thinking block only when the client requested
+    # thinking; otherwise emit it as 🤔-prefixed text so clients without a thinking
+    # UI (Codex) still see it. Callers stamp _thinking_requested onto the converted
+    # payload (proxy.py) before calling us.
+    _wants_thinking = thinking_requested(payload)
     for item in output:
         if not isinstance(item, dict):
             continue
@@ -2570,10 +2613,23 @@ def responses_json_to_anthropic_message(payload: Dict[str, Any], model_config: M
                 "input": parse_tool_arguments(item.get("arguments", "")),
             })
     output_text = responses_json_output_text(output)
+    # WHY: 模型可能把 reasoning 以 "🤔 Thinking\n```...```" 文本块塞进 message 文本
+    # （常是模仿 proxy 上一轮下发的格式）。output 里已有 reasoning item 时优先用之；
+    # 否则从 output_text 头部拆出 🤔 块，与上面的 reasoning item 走同一分流。
+    if output_text and not has_real_thinking and not _reasoning_as_text_fallback:
+        _block_reasoning, _block_rest = split_thinking_text_block(output_text)
+        if _block_reasoning:
+            _reasoning_as_text_fallback = _block_reasoning
+            output_text = _block_rest
     # WHY: When reasoning was not shown as thinking block, include it as
     # 🤔-prefixed text so users can see the reasoning in any client.
     if _reasoning_as_text_fallback and not has_real_thinking:
-        if output_text:
+        if _wants_thinking:
+            content.append({"type": "thinking", "thinking": _reasoning_as_text_fallback})
+            has_real_thinking = True
+            if output_text:
+                content.append({"type": "text", "text": output_text})
+        elif output_text:
             content.append({"type": "text", "text": "🤔 Thinking\n````\n" + _reasoning_as_text_fallback + "\n````\n\n" + output_text})
         else:
             content.append({"type": "text", "text": "🤔 Thinking\n````\n" + _reasoning_as_text_fallback + "\n````"})

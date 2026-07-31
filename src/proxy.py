@@ -74,7 +74,7 @@ from transformer import (
     anthropic_current_user_modalities, responses_current_user_modalities,
     unsupported_modalities_message,
     # Thinking
-    strip_thinking_markup, strip_markdown_json_fence,
+    strip_thinking_markup, strip_markdown_json_fence, split_thinking_text_block,
     extract_balanced_json, quote_unquoted_json_keys, parse_json_like_object,
     tool_result_content_to_text, escape_tool_result_attr,
     anthropic_tool_results_visible_text,
@@ -1424,8 +1424,22 @@ class ProxyHandler(BaseHTTPRequestHandler):
         # WHY: If we received reasoning content during streaming, add the completed
         # reasoning item to the output before the text message item.
         reasoning_text_joined = "".join(reasoning_parts)
-        # WHY: Merge reasoning into text with 🤔 code block format so all clients can see it
-        if reasoning_text_joined and output_text:
+        # WHY: 模型可能把 reasoning 以 "🤔 Thinking\n```...```" 文本块塞进正文（常是模仿
+        # proxy 上一轮下发的格式）。上游 reasoning 字段为空时，从 output_text 头部拆出
+        # 🤔 块，避免当作正文转发。
+        if output_text and not reasoning_text_joined:
+            _block_reasoning, _block_rest = split_thinking_text_block(output_text)
+            if _block_reasoning:
+                reasoning_text_joined = _block_reasoning
+                output_text = _block_rest
+        # WHY: Client requested thinking → route reasoning into a real reasoning item
+        # (collapsible thinking block) instead of merging into text. Otherwise keep the
+        # 🤔-prefixed text merge so clients without thinking UI (Codex) still see it.
+        if reasoning_text_joined and thinking_requested(body):
+            output.append({"id": response_output_item_id(), "type": "reasoning", "status": "completed", "summary": [{"type": "summary_text", "text": reasoning_text_joined}]})
+            if output_text:
+                output.append({"id": response_output_item_id(), "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": output_text}]})
+        elif reasoning_text_joined and output_text:
             combined = "🤔 Thinking\n```\n" + reasoning_text_joined + "\n```\n\n" + output_text
             output.append({"id": response_output_item_id(), "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": combined}]})
         elif reasoning_text_joined:
