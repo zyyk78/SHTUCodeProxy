@@ -287,6 +287,82 @@ def test_reasoning_content_overlap(monkeypatch):
         assert counts["stops"] <= counts["starts"], f"index {idx} has more stops than starts: {counts}"
 
 
+def test_reasoning_only_no_duplicate_text(monkeypatch):
+    """Upstream returns ONLY reasoning_content (no content) with thinking requested.
+
+    Regression: handle_streaming's tail fallback duplicated reasoning — emitted it
+    once as a thinking block (collapsible) then again as a text_delta (answer),
+    so the user saw the same text in both places. Assert reasoning appears only
+    inside thinking_delta, never as text_delta, and an empty text block still
+    exists so Claude Code reactive compact sees an assistant message.
+    """
+    chunks = [
+        _jline({"choices": [{"delta": {"reasoning_content": "Let me compute 2+2. 2+2=4."}}]}),
+        _jline({"choices": [{"delta": {"reasoning_content": " The answer is 4."}}]}),
+        _jline({"choices": [{"finish_reason": "stop", "delta": {}}]}),
+        b"data: [DONE]\n\n",
+    ]
+    import proxy as proxy_mod
+
+    monkeypatch.setattr(proxy_mod, "open_upstream", lambda *a, **kw: _LineUpstream(chunks))
+
+    captured = io.BytesIO()
+    handler = ProxyHandler.__new__(ProxyHandler)
+    handler.wfile = captured
+    handler.close_connection = False
+    for m in ("send_response", "send_header", "end_headers", "flush_headers"):
+        setattr(handler, m, lambda *a, **kw: None)
+    body = {
+        "model": "glm-chat",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": True,
+        "max_tokens": 1024,
+        "_thinking_requested": True,
+    }
+    from config_store import ModelConfig
+
+    model_config = ModelConfig(
+        name="glm-chat", model_id="glm-chat", base_url="http://fake/v1/chat/completions", api_key="k",
+        upstream_model="glm-chat", api_format="chat_completions", enable_thinking=True,
+    )
+    handler.handle_streaming(body, body, "tok", "http://fake/v1/chat/completions", 30, model_config)
+    sse = captured.getvalue().decode("utf-8")
+
+    thinking_parts, text_parts = [], []
+    text_block_exists = False
+    for line in sse.split("\n"):
+        if not line.startswith("data: "):
+            continue
+        try:
+            evt = json.loads(line[len("data: "):])
+        except Exception:
+            continue
+        if evt.get("type") == "content_block_start" and evt.get("content_block", {}).get("type") == "text":
+            text_block_exists = True
+        if evt.get("type") != "content_block_delta":
+            continue
+        dtype = evt.get("delta", {}).get("type")
+        if dtype == "thinking_delta":
+            thinking_parts.append(evt["delta"]["thinking"])
+        elif dtype == "text_delta":
+            text_parts.append(evt["delta"]["text"])
+    thinking_joined = "".join(thinking_parts)
+    text_joined = "".join(text_parts)
+
+    # reasoning fully captured in the thinking block
+    assert "2+2=4" in thinking_joined, f"reasoning missing from thinking block: {thinking_joined!r}"
+    # and NOT duplicated into the text block
+    assert "2+2=4" not in text_joined, f"reasoning leaked into text block (duplicate): {text_joined!r}"
+    assert "The answer is 4" not in text_joined, f"reasoning leaked into text block (duplicate): {text_joined!r}"
+    # a text block still exists (empty) so Claude Code compact sees an assistant message
+    assert text_block_exists, "expected at least one text content_block for compact"
+    # block index consistency still holds
+    inv = _index_inventory(sse)
+    for idx, counts in inv.items():
+        assert counts["starts"] >= 1, f"index {idx} has stop/delta but no start: {counts}"
+        assert counts["stops"] <= counts["starts"], f"index {idx} has more stops than starts: {counts}"
+
+
 if __name__ == "__main__":
     # No pytest? Run monkeypatch via simple env-var stand-in.
     import contextlib
@@ -303,4 +379,5 @@ if __name__ == "__main__":
     test_text_then_reasoning(mp)
     test_reasoning_then_text(mp)
     test_reasoning_content_overlap(mp)
-    print("OK: text_then_reasoning + reasoning_then_text + reasoning_content_overlap all consistent")
+    test_reasoning_only_no_duplicate_text(mp)
+    print("OK: all thinking/streaming regression tests consistent")

@@ -1973,13 +1973,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     "index": text_block_index,
                     "delta": {"type": "text_delta", "text": output_text},
                 })
-        # WHY: When thinking was requested but upstream only returned reasoning with no
-        # actual text content, the response would have only thinking blocks and no text.
-        # Claude Code CLI's reactive compact counts text blocks as "assistant messages"
-        # and reports "no assistant message in summarization response" if none exist.
-        # Emit reasoning as a text block so compact and other CLI features can work.
+        # WHY: 上游只返回 reasoning 没返回 content (e.g. GLM 把整段答案塞进
+        # reasoning_content 而 content 字段为空) 时, reasoning 已经作为 thinking block
+        # 增量下发。若此处再把同一份 reasoning 当 text 补发, 会出现"折叠思考块 + 正文
+        # 内容完全相同"的重复。改为只 emit 一个空 text block —— 仅满足 Claude Code
+        # reactive compact 需要至少一个 text block 作为 assistant message 的要求,
+        # 不重复 reasoning 内容; 答案在可展开的 thinking block 中可见。
+        # 上游正常返回 content 时 text_block_started 已为 True, 本分支不触发, 不受影响。
         if not text_block_started and reasoning_parts and thinking_requested(body):
-            reasoning_text = "".join(reasoning_parts)
             if thinking_block_started:
                 write_sse(self, "content_block_stop", {"type": "content_block_stop", "index": _thinking_block_index - 1})
                 thinking_block_started = False
@@ -1990,12 +1991,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 "content_block": {"type": "text", "text": ""},
             })
             text_block_started = True
-            output_text_parts.append(reasoning_text)
-            write_sse(self, "content_block_delta", {
-                "type": "content_block_delta",
-                "index": text_block_index,
-                "delta": {"type": "text_delta", "text": reasoning_text},
-            })
         # WHY: Close the thinking block if it was started during streaming
         if thinking_block_started:
             write_sse(self, "content_block_stop", {"type": "content_block_stop", "index": _thinking_block_index - 1})
