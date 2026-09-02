@@ -874,9 +874,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         model_config.model_id,
                         estimate_anthropic_input_tokens(body),
                         upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
+                        thinking_requested(body),
                     )
                     output_text = responses_json_output_text(converted.get("output", []))
-                    _block_reasoning, output_text = split_thinking_text_block(output_text)
                     self.send_responses_text_stream(model_config, output_text, estimate_anthropic_input_tokens(body))
                     log_info(f"codex compact stream_bridge done model={model_config.model_id} chars={len(output_text)}")
                     return
@@ -894,6 +894,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 model_config.model_id,
                 estimate_anthropic_input_tokens(body),
                 upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
+                thinking_requested(body),
             )
             if not compact_response.get("output"):
                 raise ValueError("Empty compaction output from upstream")
@@ -1018,6 +1019,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     model_config.model_id,
                     estimate_anthropic_input_tokens(body),
                     non_stream_payload.get("tools") if isinstance(non_stream_payload.get("tools"), list) else None,
+                    thinking_requested(body),
                 )
                 output_text = responses_json_output_text(converted.get("output", []))
                 for output_index, item in enumerate(converted.get("output", [])):
@@ -1161,6 +1163,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         model_config.model_id,
                         estimate_value_tokens(body.get("messages")),
                         fallback_payload.get("tools") if isinstance(fallback_payload.get("tools"), list) else None,
+                        thinking_requested(body),
                     )
                     if converted.get("output"):
                         log_error(f"codex stream http error recovered via non-stream model={model_config.model_id}")
@@ -1259,6 +1262,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         model_config.model_id,
                         estimate_anthropic_input_tokens(body),
                         retry_payload.get("tools") if isinstance(retry_payload.get("tools"), list) else None,
+                        thinking_requested(body),
                     )
                     output_text = responses_json_output_text(converted.get("output", []))
                 log_info(f"codex empty stream fallback model={model_config.model_id} chars={len(output_text)}")
@@ -1348,13 +1352,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     model_config.model_id,
                     estimate_anthropic_input_tokens(body),
                     upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
+                    thinking_requested(body),
                 )
-                # WHY: chat_completion_json_to_responses() reads the flag from the
-                # upstream payload, but the flag lives on the client request body.
-                # Stamp it so non-stream Codex responses also split reasoning into a
-                # real reasoning item instead of a 🤔 Thinking text block.
-                if thinking_requested(body):
-                    payload["_thinking_requested"] = True
                 if payload.get("output"):
                     # WHY: Inject reasoning placeholder for auto mode (Bug #2)
                     # if thinking_requested(body):
@@ -1378,6 +1377,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             model_config.model_id,
                             estimate_anthropic_input_tokens(body),
                             upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
+                            thinking_requested(body),
                         )
                         if payload.get("output"):
                             break
@@ -1621,6 +1621,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             model_config.model_id,
                             estimate_value_tokens(body.get("messages")),
                             non_stream_payload.get("tools") if isinstance(non_stream_payload.get("tools"), list) else None,
+                            thinking_requested(body),
                         )
                         if converted.get("output"):
                             break
@@ -1637,7 +1638,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         converted = None
                         break
                 if converted and converted.get("output"):
-                    if thinking_requested(body): converted["_thinking_requested"] = True
                     anthropic_msg = responses_json_to_anthropic_message(converted, model_config)
                 else:
                     # Fall through to real streaming below
@@ -1902,10 +1902,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         model_config.model_id,
                         estimate_value_tokens(body.get("messages")),
                         fallback_payload.get("tools") if isinstance(fallback_payload.get("tools"), list) else None,
+                        thinking_requested(body),
                     )
                     if converted.get("output"):
-                        if thinking_requested(body):
-                            converted["_thinking_requested"] = True
                         anthropic_msg = responses_json_to_anthropic_message(converted, model_config)
                         log_error(f"stream http error recovered via non-stream model={model_config.model_id}")
                         self._emit_anthropic_message_as_stream(anthropic_msg, _thinking_block_index)
@@ -1988,6 +1987,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             retry_json, model_config.model_id,
                             estimate_anthropic_input_tokens(body),
                             retry_payload.get("tools") if isinstance(retry_payload.get("tools"), list) else None,
+                            thinking_requested(body),
                         )
                         output_text = responses_json_output_text(converted.get("output", []))
                 except urllib.error.HTTPError as retry_http_exc:
@@ -2154,6 +2154,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         model_config.model_id,
                         estimate_value_tokens(body.get("messages")),
                         upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
+                        thinking_requested(body),
                     )
                     if converted.get("output"):
                         break
@@ -2167,7 +2168,6 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         except Exception as retry_exc:
                             log_error(f"WARNING non-stream retry failed model={model_config.model_id} error={retry_exc}")
                 if converted.get("output"):
-                    if thinking_requested(body): converted["_thinking_requested"] = True
                     anthropic_msg = responses_json_to_anthropic_message(converted, model_config)
                     log_info(f"response done model={model_config.model_id} non_stream=true{usage_summary(converted.get('usage'))}{usage_cache_debug(converted.get('usage'))}")
                     send_json(self, 200, anthropic_msg)

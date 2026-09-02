@@ -2420,7 +2420,19 @@ def normalize_tool_call_name_for_tools(tool_call: Dict[str, Any], tools: Optiona
     return updated
 
 
-def chat_completion_json_to_responses(payload: Dict[str, Any], model: str, input_tokens: int, tools: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+def chat_completion_json_to_responses(
+    payload: Dict[str, Any],
+    model: str,
+    input_tokens: int,
+    tools: Optional[List[Dict[str, Any]]] = None,
+    thinking_requested: Optional[bool] = None,
+) -> Dict[str, Any]:
+    """Convert an upstream Chat Completions JSON payload to a Responses payload.
+
+    ``thinking_requested`` is taken from the client request and is passed
+    explicitly by every proxy call site. A flag previously stored on the raw
+    upstream payload is accepted for compatibility, but must not be relied on.
+    """
     if isinstance(payload.get("error"), dict):
         message = payload["error"].get("message") or _orjson_dumps_str(payload["error"])
         raise ValueError(str(message))
@@ -2450,11 +2462,13 @@ def chat_completion_json_to_responses(payload: Dict[str, Any], model: str, input
         if _block_reasoning:
             reasoning_text = _block_reasoning
             output_text = _block_rest
-    # WHY: When upstream returns reasoning but no content (e.g. qwen-instruct, glm-chat
-    # with enable_thinking), the actual response text is in the reasoning field.
-    # Use reasoning as the text output when content is empty, so the user gets
-    # a response instead of empty output.
-    if not output_text and reasoning_text:
+    # WHY: When upstream returns reasoning but no content and the client did not
+    # request thinking (e.g. qwen-instruct), use reasoning as visible text so the
+    # user still gets a response.  When thinking was requested, keep that data as
+    # a real reasoning item; promoting it to output_text would leak internal
+    # reasoning into the visible assistant message and corrupt later history.
+    _wants_thinking = bool(payload.get("_thinking_requested")) if thinking_requested is None else thinking_requested
+    if not output_text and reasoning_text and not _wants_thinking:
         output_text = reasoning_text
         reasoning_text = ""
     if not output_text and not reasoning_text:
@@ -2464,7 +2478,7 @@ def chat_completion_json_to_responses(payload: Dict[str, Any], model: str, input
     # WHY: Client requested thinking → route reasoning into a real reasoning item
     # (collapsible thinking block) instead of merging into text. Otherwise keep the
     # 🤔-prefixed text merge so clients without thinking UI (Codex) still see it.
-    if reasoning_text and thinking_requested(payload):
+    if reasoning_text and _wants_thinking:
         output.append({"id": response_output_item_id(), "type": "reasoning", "status": "completed", "summary": [{"type": "summary_text", "text": reasoning_text}]})
         if output_text:
             output.append({"id": response_output_item_id(), "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": output_text}]})
@@ -2763,76 +2777,116 @@ def extract_anthropic_usage(done_payload: Optional[Dict[str, Any]], chat_stream_
 
 
 def _codex_emit_recovered_response(emit_fn, request_id: str, message_id: str, converted: Dict[str, Any], model_config: ModelConfig, _thinking_requested: bool = False) -> None:
-    """Emit a complete Responses SSE sequence from a recovered non-stream Chat Completions response."""
-    # Normalize legacy reasoning text in recovered Responses output before any
-    # deltas are emitted.
-    for output_item in converted.get("output", []):
-        if isinstance(output_item, dict) and output_item.get("type") == "message":
-            output_item["content"] = normalize_thinking_text_block_in_message_content(output_item.get("content"))
-    # Emit output item added
-    emit_fn("response.output_item.added", {
-        "output_index": 0,
-        "item": {"id": message_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []},
-    })
-    # Inject reasoning if thinking was requested
-    if _thinking_requested:
-        reasoning_id = response_output_item_id()
-        # WHY: Use summary_text instead of encrypted_content for synthetic reasoning.
-        # encrypted_content with random hex data causes garbled output in Claude Code.
-        emit_fn("response.output_item.added", {
-            "output_index": 0,
-            "item": {"id": reasoning_id, "type": "reasoning", "summary": [{"type": "summary_text", "text": _THINKING_PLACEHOLDER_TEXT}]},
-        })
-        emit_fn("response.output_item.done", {
-            "output_index": 0,
-            "item": {"id": reasoning_id, "type": "reasoning", "status": "completed"},
-        })
-    # Emit text content
-    output_text = responses_json_output_text(converted.get("output", []))
-    if output_text:
-        emit_fn("response.content_part.added", {
-            "item_id": message_id,
-            "output_index": 0,
-            "content_index": 0,
-            "part": {"type": "output_text", "text": ""},
-        })
-        emit_fn("response.output_text.delta", {
-            "item_id": message_id,
-            "output_index": 0,
-            "content_index": 0,
-            "delta": output_text,
-        })
-        emit_fn("response.output_text.done", {
-            "item_id": message_id,
-            "output_index": 0,
-            "content_index": 0,
-            "text": output_text,
-        })
-        emit_fn("response.content_part.done", {
-            "item_id": message_id,
-            "output_index": 0,
-            "content_index": 0,
-            "part": {"type": "output_text", "text": output_text},
-        })
-    # Emit tool calls from output — mirror normal stream sequence exactly
-    # (added → arguments delta → arguments done → output_item.done per tool)
-    tool_outputs = [item for item in converted.get("output", []) if isinstance(item, dict) and item.get("type") == "function_call"]
-    output: list = []
-    # Close the message item first
-    text_item = {"id": message_id, "type": "message", "status": "completed", "role": "assistant",
-                 "content": [{"type": "output_text", "text": output_text}] if output_text else []}
-    emit_fn("response.output_item.done", {"output_index": 0, "item": text_item})
-    output.append(text_item)
-    for tool_call in tool_outputs:
-        call_id = tool_call.get("call_id", tool_call.get("id", f"call_{response_id()}"))
-        item = {"id": call_id, "type": "function_call", "name": tool_call.get("name", ""), "call_id": call_id, "arguments": tool_call.get("arguments", "")}
+    """Emit a complete Responses SSE sequence from a recovered non-stream response.
+
+    Recovered responses can contain real reasoning items. Re-emitting a
+    placeholder would discard that content, and emitting reasoning and message
+    at the same output_index can corrupt Codex stream state. Emit each item at
+    its own index and preserve real reasoning before the visible message.
+    """
+    output: List[Dict[str, Any]] = []
+
+    def add_item(item: Dict[str, Any]) -> Dict[str, Any]:
+        emitted_item = dict(item, status="in_progress")
         output_index = len(output)
-        emit_fn("response.output_item.added", {"output_index": output_index, "item": dict(item, status="in_progress")})
-        emit_fn("response.function_call_arguments.delta", {"output_index": output_index, "item_id": call_id, "call_id": call_id, "delta": item["arguments"]})
-        emit_fn("response.function_call_arguments.done", {"output_index": output_index, "item_id": call_id, "call_id": call_id, "arguments": item["arguments"]})
-        emit_fn("response.output_item.done", {"output_index": output_index, "item": item})
-        output.append(item)
-    # Emit response completed
+        emit_fn("response.output_item.added", {"output_index": output_index, "item": emitted_item})
+        output.append(emitted_item)
+        return emitted_item
+
+    # Recovered payloads may place reasoning after the message. Codex expects
+    # reasoning to precede the visible assistant message, so reorder it first.
+    converted_output = [item for item in converted.get("output", []) if isinstance(item, dict)]
+    reasoning_items = [item for item in converted_output if item.get("type") == "reasoning"]
+    other_items = [item for item in converted_output if item.get("type") != "reasoning"]
+
+    for reasoning_item in reasoning_items:
+        text = "\n".join(
+            summary.get("text", "")
+            for summary in reasoning_item.get("summary", [])
+            if isinstance(summary, dict) and isinstance(summary.get("text"), str)
+        )
+        emitted = add_item(reasoning_item)
+        if text:
+            emit_fn("response.reasoning_summary_text.delta", {"item_id": emitted.get("id"), "output_index": output.index(emitted), "delta": text})
+            emit_fn("response.reasoning_summary_text.done", {"item_id": emitted.get("id"), "output_index": output.index(emitted), "text": text})
+        emit_fn("response.output_item.done", {"output_index": output.index(emitted), "item": emitted})
+
+    for original_item in other_items:
+        if original_item.get("type") == "message":
+            message_parts: List[Dict[str, Any]] = []
+            legacy_reasoning_parts: List[str] = []
+            content = original_item.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if (
+                        not legacy_reasoning_parts
+                        and isinstance(part, dict)
+                        and part.get("type") in ("output_text", "text")
+                        and isinstance(part.get("text"), str)
+                    ):
+                        reasoning_text, remaining_text = split_thinking_text_block(part["text"])
+                        if reasoning_text:
+                            legacy_reasoning_parts.append(reasoning_text)
+                            if remaining_text:
+                                message_parts.append(dict(part, text=remaining_text))
+                            continue
+                    if isinstance(part, dict):
+                        message_parts.append(part)
+            item = dict(original_item, content=message_parts)
+
+            if legacy_reasoning_parts:
+                text = "\n".join(legacy_reasoning_parts)
+                reasoning_item = {
+                    "id": response_output_item_id(),
+                    "type": "reasoning",
+                    "status": "completed",
+                    "summary": [{"type": "summary_text", "text": text}],
+                }
+                emitted = add_item(reasoning_item)
+                emit_fn("response.reasoning_summary_text.delta", {"item_id": emitted["id"], "output_index": output.index(emitted), "delta": text})
+                emit_fn("response.reasoning_summary_text.done", {"item_id": emitted["id"], "output_index": output.index(emitted), "text": text})
+                emit_fn("response.output_item.done", {"output_index": output.index(emitted), "item": emitted})
+
+            emitted_message = add_item(item)
+            output_index = output.index(emitted_message)
+            output_text = "".join(
+                part.get("text", "")
+                for part in message_parts
+                if isinstance(part, dict) and part.get("type") in ("output_text", "text")
+            )
+            if message_parts:
+                emit_fn("response.content_part.added", {
+                    "item_id": emitted_message.get("id", message_id),
+                    "output_index": output_index,
+                    "content_index": 0,
+                    "part": dict(message_parts[0], text=""),
+                })
+                if output_text:
+                    emit_fn("response.output_text.delta", {"item_id": emitted_message.get("id", message_id), "output_index": output_index, "content_index": 0, "delta": output_text})
+                    emit_fn("response.output_text.done", {"item_id": emitted_message.get("id", message_id), "output_index": output_index, "content_index": 0, "text": output_text})
+                emit_fn("response.content_part.done", {"item_id": emitted_message.get("id", message_id), "output_index": output_index, "content_index": 0, "part": message_parts[0]})
+            emit_fn("response.output_item.done", {"output_index": output_index, "item": emitted_message})
+
+        elif original_item.get("type") == "function_call":
+            call_id = original_item.get("call_id") or original_item.get("id") or f"call_{response_id()}"
+            item = dict(original_item, id=call_id, call_id=call_id, status="in_progress")
+            output_index = len(output)
+            emit_fn("response.output_item.added", {"output_index": output_index, "item": item})
+            arguments = item.get("arguments", "{}")
+            emit_fn("response.function_call_arguments.delta", {"output_index": output_index, "item_id": call_id, "call_id": call_id, "delta": arguments})
+            emit_fn("response.function_call_arguments.done", {"output_index": output_index, "item_id": call_id, "call_id": call_id, "arguments": arguments})
+            completed_call = dict(item, status="completed")
+            emit_fn("response.output_item.done", {"output_index": output_index, "item": completed_call})
+            output.append(completed_call)
+
+    # Preserve auto-mode compatibility when recovery lost all reasoning content.
+    if _thinking_requested and not any(item.get("type") == "reasoning" for item in output):
+        reasoning_item = {"id": response_output_item_id(), "type": "reasoning", "summary": [{"type": "summary_text", "text": _THINKING_PLACEHOLDER_TEXT}]}
+        emitted = add_item(reasoning_item)
+        emit_fn("response.reasoning_summary_text.delta", {"item_id": emitted["id"], "output_index": output.index(emitted), "delta": _THINKING_PLACEHOLDER_TEXT})
+        emit_fn("response.reasoning_summary_text.done", {"item_id": emitted["id"], "output_index": output.index(emitted), "text": _THINKING_PLACEHOLDER_TEXT})
+        emit_fn("response.output_item.done", {"output_index": output.index(emitted), "item": dict(emitted, status="completed")})
+
     usage = converted.get("usage", {})
     emit_fn("response.completed", {
         "response": {
@@ -2841,7 +2895,7 @@ def _codex_emit_recovered_response(emit_fn, request_id: str, message_id: str, co
             "created_at": int(time.time()),
             "status": "completed",
             "model": model_config.model_id,
-            "output": converted.get("output", []),
+            "output": output,
             "usage": usage,
         }
     })
