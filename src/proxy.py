@@ -645,6 +645,22 @@ class ProxyHandler(BaseHTTPRequestHandler):
         ])
         self.close_connection = True
 
+    @staticmethod
+    def _passthrough_target_url(upstream_url: str, route: str) -> str:
+        """按 provider base_url 形态拼接透传端点.
+
+        WHY: Codex 官方 provider 配置常使用根式 base_url（如 MiniMax 的
+        https://api.minimax.cn/v1）。旧逻辑统一追加 /v1/responses 会变成
+        /v1/v1/responses；同时保留旧的全端点式 base_url 兼容。
+        """
+        url = upstream_url.rstrip("/")
+        endpoint = "messages" if route in ("/v1/messages", "/messages") else "responses"
+        if url.endswith(f"/{endpoint}"):
+            return url
+        if url.endswith("/v1"):
+            return f"{url}/{endpoint}"
+        return f"{url}/v1/{endpoint}"
+
     def _handle_passthrough(self, body: Dict[str, Any], auth_token: str, upstream_url: str, timeout: int, model_config: ModelConfig) -> None:
         """透传模式: 不做任何格式转换, 直接转发原始请求并中继原始响应.
 
@@ -656,20 +672,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
         # 移除 proxy 内部标记
         payload.pop("_thinking_requested", None)
         payload.pop("_reasoning_enabled", None)
+        # WHY: Codex 可能用本地路由名（如 minimax3-c）请求；上游只认识 model_id
+        # （如 MiniMax-M3），透传前必须完成这层别名映射，否则返回 unknown model。
+        payload["model"] = model_config.upstream_model or model_config.model_id
         payload["stream"] = stream
 
-        # 根据 route 决定上游 URL 路径
+        # 根据 route 决定上游 URL 路径；兼容根式 /v1 与全端点式 base_url
         route = self.route_path()
-        if route in ("/v1/messages", "/messages"):
-            # Anthropic Messages: 直接转发到上游 /v1/messages
-            target_url = upstream_url.rstrip("/")
-            if not target_url.endswith("/v1/messages"):
-                target_url = target_url.rstrip("/") + "/v1/messages"
-        else:
-            # Responses: 直接转发到上游 /v1/responses
-            target_url = upstream_url.rstrip("/")
-            if not target_url.endswith("/v1/responses"):
-                target_url = target_url.rstrip("/") + "/v1/responses"
+        target_url = self._passthrough_target_url(upstream_url, route)
 
         log_info(f"passthrough model={body.get('model')} url={target_url} stream={stream}")
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- **P1**: Fixed MiniMax Codex passthrough sending local route names such as `minimax3-c` directly to upstream; the proxy now maps them to `MiniMax-M3` before forwarding.
+- **P1**: Preserved `/responses` as a Codex-compatible alias for `/v1/responses` and normalized root/`/v1`/full-endpoint upstream base URLs.
+
 ## v4.8.0 (2026-06-11)
 
 Claude Code auto mode safety classifier compatibility release.

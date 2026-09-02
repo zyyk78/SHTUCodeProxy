@@ -638,6 +638,78 @@ def exercise_codex_responses_passthrough() -> None:
     assert_true(system_payload["messages"][1]["role"] == "user", "codex chat route should keep user messages after merged system")
 
 
+def exercise_passthrough_model_alias() -> None:
+    from proxy import ProxyHandler
+
+    class FakeResponse:
+        headers = {"content-type": "application/json"}
+
+        def read(self) -> bytes:
+            return b'{"ok": true}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    class FakeWfile:
+        def __init__(self):
+            self.chunks = []
+
+        def write(self, data: bytes):
+            self.chunks.append(data)
+
+        def flush(self):
+            pass
+
+    class FakeHandler:
+        def __init__(self):
+            self.wfile = FakeWfile()
+            self.status = None
+            self.response_headers = []
+
+        def route_path(self) -> str:
+            return "/responses"
+
+        def _passthrough_target_url(self, upstream_url: str, route: str) -> str:
+            return ProxyHandler._passthrough_target_url(upstream_url, route)
+
+        def send_response(self, status: int):
+            self.status = status
+
+        def send_header(self, name: str, value: str):
+            self.response_headers.append((name, value))
+
+        def end_headers(self):
+            pass
+
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["payload"] = json.loads(request.data.decode("utf-8"))
+        return FakeResponse()
+
+    model = ModelConfig(
+        name="minimax3-c",
+        model_id="MiniMax-M3",
+        base_url="https://api.minimax.cn",
+        api_key="upstream-key",
+        upstream_model="MiniMax-M3",
+        api_format="responses",
+    )
+    handler = FakeHandler()
+    body = {"model": "minimax3-c", "input": "hello"}
+    with patch("proxy.urllib.request.urlopen", fake_urlopen):
+        ProxyHandler._handle_passthrough(handler, body, model.api_key, model.base_url, 5, model)
+
+    assert_true(captured["url"] == "https://api.minimax.cn/v1/responses", "root base_url should target /v1/responses")
+    assert_true(captured["payload"]["model"] == "MiniMax-M3", "passthrough must map local route name to upstream model_id")
+    assert_true(captured["payload"]["stream"] is True, "passthrough should honor default streaming behavior")
+    assert_true(handler.status == 200, "passthrough should relay successful upstream status")
+
+
 def exercise_default_stream_config() -> None:
     anthropic_body = {"model": "smoke-model", "messages": [{"role": "user", "content": "hello"}]}
     assert_true(
@@ -1530,6 +1602,7 @@ def main() -> int:
         exercise_pyqt_model_management_regressions()
         exercise_count_tokens_estimate()
         exercise_codex_responses_passthrough()
+        exercise_passthrough_model_alias()
         exercise_default_stream_config()
         exercise_codex_config_writer(tmpdir)
         exercise_backup_restore(tmpdir)
