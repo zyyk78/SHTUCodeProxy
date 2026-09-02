@@ -75,6 +75,7 @@ from transformer import (
     unsupported_modalities_message,
     # Thinking
     strip_thinking_markup, strip_markdown_json_fence, split_thinking_text_block,
+    responses_has_image_input,
     normalize_thinking_text_block_in_message_content,
     extract_balanced_json, quote_unquoted_json_keys, parse_json_like_object,
     tool_result_content_to_text, escape_tool_result_attr,
@@ -577,6 +578,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # in Codex) instead of plain text.
             if not isinstance(body.get("thinking"), dict) and not is_claude_auto_classifier_request(body) and (getattr(model_config, "enable_thinking", False) or getattr(model_config, "supports_reasoning", False)):
                 body["thinking"] = {"type": "enabled", "budget_tokens": max(1, (body.get("max_output_tokens") or body.get("max_tokens") or 16384) - 1)}
+            # WHY: Codex normally cannot attach images through its public Responses
+            # schema, so model catalogs commonly leave supports_image=false. Some
+            # deployments still send image parts/data URLs. Upstream glm-chat does
+            # accept them, so detect image-bearing input and force-enable image mode
+            # for the genaiapi conversion path.
+            if model_config.supports_image is False and responses_has_image_input(body):
+                model_config = replace(model_config, supports_image=True)
             body_for_upstream = body
             unsupported = unsupported_modalities(model_config, responses_current_user_modalities(body))
             if unsupported:

@@ -1034,6 +1034,36 @@ def responses_current_user_modalities(body: Dict[str, Any]) -> set[str]:
     return set()
 
 
+def responses_has_image_input(body: Dict[str, Any]) -> bool:
+    """Detect any image modality in the Responses request.
+
+    WHY: Codex can deliver screenshots in several shapes, including a plain
+    string whose value is a data URL or a provider-specific "input_image" field.
+    The generic modality detector is intentionally conservative; this helper is
+    used only to decide whether image mode should be force-enabled.
+    """
+    if responses_current_user_modalities(body):
+        return True
+
+    def walk(value: Any, depth: int = 0) -> bool:
+        if depth > 8:
+            return False
+        if isinstance(value, str):
+            return bool(media_string_modalities(value))
+        if isinstance(value, list):
+            return any(walk(item, depth + 1) for item in value)
+        if not isinstance(value, dict):
+            return False
+        if "image_url" in value or "input_image" in value:
+            return True
+        return any(walk(item, depth + 1) for item in value.values())
+
+    for item in body.get("input", []):
+        if isinstance(item, dict) and walk(item.get("content")):
+            return True
+    return False
+
+
 def unsupported_modalities_message(model_config: ModelConfig, modalities: set[str]) -> str:
     labels = {"image": "图片识别", "audio": "音频输入", "video": "视频输入"}
     names = "、".join(labels[item] for item in ("image", "audio", "video") if item in modalities)
