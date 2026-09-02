@@ -21,6 +21,7 @@ import ipaddress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import replace
 
 # 日志模块
 from logger import (
@@ -1348,6 +1349,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     estimate_anthropic_input_tokens(body),
                     upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
                 )
+                # WHY: chat_completion_json_to_responses() reads the flag from the
+                # upstream payload, but the flag lives on the client request body.
+                # Stamp it so non-stream Codex responses also split reasoning into a
+                # real reasoning item instead of a 🤔 Thinking text block.
+                if thinking_requested(body):
+                    payload["_thinking_requested"] = True
                 if payload.get("output"):
                     # WHY: Inject reasoning placeholder for auto mode (Bug #2)
                     # if thinking_requested(body):

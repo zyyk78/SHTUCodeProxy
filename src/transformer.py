@@ -1059,7 +1059,7 @@ def responses_has_image_input(body: Dict[str, Any]) -> bool:
         return any(walk(item, depth + 1) for item in value.values())
 
     for item in body.get("input", []):
-        if isinstance(item, dict) and walk(item.get("content")):
+        if isinstance(item, dict) and (walk(item.get("content")) or walk(item.get("output"))):
             return True
     return False
 
@@ -1742,8 +1742,12 @@ def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: 
                 # tool result: 先 flush assistant tool_calls
                 _flush_pending()
                 call_id = item.get("call_id") or item.get("id") or ""
+                # WHY: Codex view_image returns an input_image inside
+                # function_call_output. Flattening it to text loses the image;
+                # the upstream accepts image_url parts in tool message content.
+                tool_content = responses_content_to_chat_content(item.get("output") or item.get("content"))
                 output_text = responses_content_to_text(item.get("output") or item.get("content"))
-                messages.append({"role": "tool", "tool_call_id": call_id, "content": output_text})
+                messages.append({"role": "tool", "tool_call_id": call_id, "content": tool_content})
                 # 性能优化: 仅保存原始 (call_id, content), 不立即生成 visible_text
                 # 截断在 _flush_visible 时统一处理
                 if output_text:
