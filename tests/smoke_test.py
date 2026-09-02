@@ -1431,6 +1431,66 @@ def exercise_structured_content_passthrough() -> None:
     assert_true(response_content[1] == {"type": "input_file", "file_url": "https://example.invalid/a.pdf"}, "Anthropic document URL should map to Responses input_file")
 
 
+def exercise_glm_flash_image_capability() -> None:
+    # WHY: GLM flash is multimodal but catalogs often omit supports_image. Both
+    # request paths must be able to forward image parts to the Chat Completions
+    # upstream once the runtime capability is corrected.
+    from dataclasses import replace
+
+    glm = ModelConfig(
+        name="glm-5.3-flash",
+        model_id="glm-5.3-flash",
+        base_url="https://example.invalid/v1/chat/completions",
+        api_key="key",
+        upstream_model="glm-5.3-flash",
+        api_format="chat_completions",
+        supports_image=False,
+    )
+
+    responses_body = {
+        "model": "glm-5.3-flash",
+        "input": [{
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "describe the image"},
+                {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+            ],
+        }],
+    }
+    codex_model = replace(glm, supports_image=True)
+    chat_payload = responses_request_to_chat_completions(responses_body, "glm", "glm-5.3-flash")
+    assert_true(chat_payload["messages"][0]["content"][1]["type"] == "image_url", "Codex image part should convert to image_url for multimodal Chat model")
+
+    anthropic_body = {
+        "model": "glm-5.3-flash",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe the image"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}},
+            ],
+        }],
+    }
+    sanitized_anthropic = sanitized_anthropic_body_for_model(anthropic_body, codex_model)
+    anthropic_chat = anthropic_messages_to_chat_completions(sanitized_anthropic, "glm", "glm-5.3-flash")
+    assert_true(anthropic_chat["messages"][0]["content"][1]["type"] == "image_url", "Claude base64 image should convert to image_url for multimodal Chat model")
+
+    # WHY: preserve the deliberate degradation behavior for genuinely text-only models.
+    text_only_chat = anthropic_messages_to_chat_completions(
+        sanitized_anthropic_body_for_model(anthropic_body, glm), "glm", "glm-5.3-flash"
+    )
+    assert_true("data:image" not in json.dumps(text_only_chat), "text-only model must still downgrade image data")
+
+    # WHY: mirror the proxy's Responses-path runtime correction for Anthropic image requests.
+    runtime_model = glm
+    if runtime_model.supports_image is False and "image" in anthropic_current_user_modalities(anthropic_body):
+        runtime_model = replace(runtime_model, supports_image=True)
+    proxy_style_chat = anthropic_messages_to_chat_completions(
+        sanitized_anthropic_body_for_model(anthropic_body, runtime_model), "glm", "glm-5.3-flash"
+    )
+    assert_true("data:image" in json.dumps(proxy_style_chat), "runtime image correction should forward Claude image to multimodal Chat model")
+
+
 def exercise_multimodal_capability_config() -> None:
     gpt_model = ModelConfig.from_dict({"model_id": "GPT-5.5", "upstream_model": "GPT-5.5"})
     qwen_model = ModelConfig.from_dict({"model_id": "qwen-instruct", "upstream_model": "qwen-instruct", "api_format": "chat_completions"})
@@ -1630,6 +1690,7 @@ def main() -> int:
         exercise_multimodal_chat_passthrough()
         exercise_structured_content_passthrough()
         exercise_multimodal_capability_config()
+        exercise_glm_flash_image_capability()
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 

@@ -520,7 +520,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 _budget = max(1, (body.get("max_tokens") or 16384) - 1)
                 body["thinking"] = {"type": "enabled", "budget_tokens": _budget}
             body_for_upstream = body
-            unsupported = unsupported_modalities(model_config, anthropic_current_user_modalities(body))
+            # WHY: Claude image requests can include base64 sources in the current
+            # user turn even when the catalog marks a multimodal Chat model as
+            # image-disabled. Mirror the Responses-path capability correction so
+            # the transformer forwards `image_url` instead of degrading to text.
+            current_modalities = anthropic_current_user_modalities(body)
+            if model_config.supports_image is False and "image" in current_modalities:
+                model_config = replace(model_config, supports_image=True)
+            unsupported = unsupported_modalities(model_config, current_modalities)
             if unsupported:
                 log_debug(f"degraded unsupported modalities model={model_config.model_id} modalities={','.join(sorted(unsupported))} stream={stream}")
             body_for_upstream = sanitized_anthropic_body_for_model(body, model_config)
