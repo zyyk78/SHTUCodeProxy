@@ -758,6 +758,11 @@ class IosProxyApp(QMainWindow):
         self.default_stream_check.setToolTip("Use streaming responses when the client request does not explicitly set stream=false.")
         self.default_stream_check.setChecked(bool(self.config_data.default_stream))
         server_layout.addWidget(self.default_stream_check, 0, 8, 1, 2, alignment=Qt.AlignVCenter)
+        # WHY: tool_result_visible_fallback is a runtime proxy setting; without a GUI control it would be silently reset on every save.
+        self.tool_result_fallback_check = QCheckBox("Tool result fallback")
+        self.tool_result_fallback_check.setToolTip("Duplicate short tool results as visible text when an upstream ignores tool-role content.")
+        self.tool_result_fallback_check.setChecked(bool(self.config_data.tool_result_visible_fallback))
+        server_layout.addWidget(self.tool_result_fallback_check, 0, 10, 1, 2, alignment=Qt.AlignVCenter)
         self.add_path_row(server_layout, 1, "Claude Code Path", self.claude_path_edit, self.browse_claude_path)
         self.add_path_row(server_layout, 2, "Claude Settings Path", self.claude_settings_path_edit, self.browse_claude_settings_path)
         self.add_path_row(server_layout, 3, "Codex config.toml Path", self.codex_config_path_edit, self.browse_codex_config_path)
@@ -1267,6 +1272,8 @@ class IosProxyApp(QMainWindow):
         self.config_data.codex_config_path = portable_codex_config_path(self.codex_config_path_edit.text().strip() or default_codex_config_path())
         self.config_data.codex_auth_path = portable_codex_auth_path(self.codex_auth_path_edit.text().strip() or default_codex_auth_path())
         self.config_data.default_stream = self.default_stream_check.isChecked()
+        # WHY: persist the backend runtime toggle together with every GUI save to keep config parity.
+        self.config_data.tool_result_visible_fallback = self.tool_result_fallback_check.isChecked()
         self.config_data.diagnostic_logging = self.diagnostic_logging_check.isChecked()
         return True
 

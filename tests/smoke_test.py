@@ -68,7 +68,7 @@ def make_config(tmpdir: Path) -> AppConfig:
         codex_model_id="smoke-model",
         codex_sandbox_mode="workspace-write",
         codex_approval_policy="never",
-        codex_personality="default",
+        codex_personality="pragmatic",
         codex_reasoning_effort="medium",
         model_env={key: "smoke-model" for key in MODEL_ENV_KEYS},
         timeout=30,
@@ -77,6 +77,7 @@ def make_config(tmpdir: Path) -> AppConfig:
         codex_config_path=str(tmpdir / ".codex" / "config.toml"),
         codex_auth_path=str(tmpdir / ".codex" / "auth.json"),
         default_stream=True,
+        tool_result_visible_fallback=True,
         diagnostic_logging=False,
         update_check_enabled=True,
         update_check_interval_hours=24,
@@ -420,7 +421,7 @@ def exercise_model_suffix_routing() -> None:
         codex_model_id="deepseek-pro",
         codex_sandbox_mode="workspace-write",
         codex_approval_policy="never",
-        codex_personality="default",
+        codex_personality="pragmatic",
         codex_reasoning_effort="medium",
         model_env={key: "chatglm" for key in MODEL_ENV_KEYS},
         timeout=30,
@@ -429,6 +430,7 @@ def exercise_model_suffix_routing() -> None:
         codex_config_path="/tmp/codex-config.toml",
         codex_auth_path="/tmp/codex-auth.json",
         default_stream=True,
+        tool_result_visible_fallback=True,
         diagnostic_logging=False,
         update_check_enabled=True,
         update_check_interval_hours=24,
@@ -494,7 +496,7 @@ def exercise_pyqt_model_management_regressions() -> None:
         codex_model_id="glm-chat",
         codex_sandbox_mode="workspace-write",
         codex_approval_policy="never",
-        codex_personality="default",
+        codex_personality="pragmatic",
         codex_reasoning_effort="medium",
         model_env={key: "glm-chat" for key in MODEL_ENV_KEYS},
         timeout=30,
@@ -503,6 +505,7 @@ def exercise_pyqt_model_management_regressions() -> None:
         codex_config_path="config.toml",
         codex_auth_path="auth.json",
         default_stream=True,
+        tool_result_visible_fallback=True,
         diagnostic_logging=False,
         update_check_enabled=True,
         update_check_interval_hours=24,
@@ -525,6 +528,14 @@ def exercise_pyqt_model_management_regressions() -> None:
         assert_true(window.config_data.model_env["ANTHROPIC_MODEL"] == "qwen-chat", "main route should persist")
         assert_true(window.config_data.model_env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "deepseek-chat", "haiku route should persist")
         assert_true(window.config_data.codex_model_id == "deepseek-chat", "codex route should persist")
+        # WHY: keep GUI save in sync with backend-only runtime settings; prevents silent reset when a new AppConfig field ships.
+        assert_true(window.tool_result_fallback_check.isChecked(), "new backend runtime defaults should load into GUI")
+        window.tool_result_fallback_check.setChecked(False)
+        assert_true(window.save(), "save should succeed when backend runtime toggle changes")
+        assert_true(window.config_data.tool_result_visible_fallback is False, "GUI runtime toggle should persist to config model")
+        window.tool_result_fallback_check.setChecked(True)
+        assert_true(window.save(), "repeat save should restore runtime toggle")
+        assert_true(window.config_data.tool_result_visible_fallback is True, "GUI runtime toggle should remain writable")
         save_button = next(button for button in window.findChildren(QPushButton) if button.text() == "Save Config")
         save_button.click()
         assert_true(window.config_data.default_model_id == "qwen-chat", "button click save should not receive checked state as route override")
