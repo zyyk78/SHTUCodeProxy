@@ -54,6 +54,80 @@ def test_recovered_response_emits_real_reasoning_and_distinct_indices():
     assert [payload["output_index"] for payload in added] == [0, 1, 2]
     assert len({payload["output_index"] for kind, payload in events if "output_index" in payload}) == 3
     assert [item["type"] for item in events[-1][1]["response"]["output"]] == ["reasoning", "message", "function_call"]
+def test_recovered_thinking_only_is_not_duplicated_as_message():
+    converted = {
+        "output": [
+            {"id": "rs", "type": "reasoning", "status": "completed", "summary": [{"type": "summary_text", "text": "hidden reasoning"}]}
+        ],
+        "usage": {"input_tokens": 3, "output_tokens": 4},
+    }
+
+    def emit(kind, payload):
+        events.append((kind, payload))
+
+    events = []
+
+    class ModelConfig:
+        model_id = "glm-chat"
+
+    _codex_emit_recovered_response(emit, "resp", "base", converted, ModelConfig(), True)
+    message_items = [payload["item"] for kind, payload in events if kind == "response.output_item.added" and payload["item"]["type"] == "message"]
+    reasoning_items = [payload["item"] for kind, payload in events if kind == "response.output_item.added" and payload["item"]["type"] == "reasoning"]
+    assert len(message_items) == 0
+    assert len(reasoning_items) == 1
+    assert reasoning_items[0]["summary"][0]["text"] == "hidden reasoning"
+
+
+def test_recovered_legacy_thinking_is_split_from_visible_message():
+    converted = {
+        "output": [
+            {"id": "m1", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "🤔 Thinking\n```\nhidden reasoning\n```\n\nvisible answer"}]}
+        ],
+        "usage": {"input_tokens": 3, "output_tokens": 4},
+    }
+
+    def emit(kind, payload):
+        events.append((kind, payload))
+
+    events = []
+
+    class ModelConfig:
+        model_id = "glm-chat"
+
+    _codex_emit_recovered_response(emit, "resp", "base", converted, ModelConfig(), True)
+    reasoning_items = [payload["item"] for kind, payload in events if kind == "response.output_item.added" and payload["item"]["type"] == "reasoning"]
+    message_items = [payload["item"] for kind, payload in events if kind == "response.output_item.added" and payload["item"]["type"] == "message"]
+    assert len(reasoning_items) == 1
+    assert reasoning_items[0]["summary"][0]["text"] == "hidden reasoning"
+    assert len(message_items) == 1
+    assert message_items[0]["content"][0]["text"] == "visible answer"
+    completed_output = events[-1][1]["response"]["output"]
+    assert [item["type"] for item in completed_output] == ["reasoning", "message"]
+
+
+def test_recovered_fragmented_messages_are_merged_into_one_item():
+    converted = {
+        "output": [
+            {"id": "m1", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "part one "}]},
+            {"id": "m2", "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "part two"}]},
+            {"id": "tool", "type": "function_call", "call_id": "call_1", "name": "list", "arguments": "{}"},
+        ],
+        "usage": {"input_tokens": 3, "output_tokens": 4},
+    }
+    events = []
+
+    def emit(kind, payload):
+        events.append((kind, payload))
+
+    class ModelConfig:
+        model_id = "glm-chat"
+
+    _codex_emit_recovered_response(emit, "resp", "base", converted, ModelConfig(), True)
+    message_added = [payload["item"] for kind, payload in events if kind == "response.output_item.added" and payload["item"]["type"] == "message"]
+    assert len(message_added) == 1
+    assert message_added[0]["content"][0]["text"] == "part one part two"
+    completed_output = events[-1][1]["response"]["output"]
+    assert [item["type"] for item in completed_output] == ["reasoning", "message", "function_call"]
 
 
 if __name__ == "__main__":

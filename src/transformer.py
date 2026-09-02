@@ -2844,98 +2844,112 @@ def _codex_emit_recovered_response(emit_fn, request_id: str, message_id: str, co
         return emitted_item
 
     # Recovered payloads may place reasoning after the message. Codex expects
-    # reasoning to precede the visible assistant message, so reorder it first.
+    # reasoning to precede the visible assistant message, so normalize all
+    # reasoning first. Multiple recovered message items are also merged into a
+    # single assistant item: some upstream retries can fragment text, and Codex
+    # renders every message item as a separate turn/bullet.
     converted_output = [item for item in converted.get("output", []) if isinstance(item, dict)]
-    reasoning_items = [item for item in converted_output if item.get("type") == "reasoning"]
-    other_items = [item for item in converted_output if item.get("type") != "reasoning"]
+    message_items = [item for item in converted_output if item.get("type") == "message"]
+    function_items = [item for item in converted_output if item.get("type") == "function_call"]
+    other_items = [item for item in converted_output if item.get("type") not in ("message", "function_call", "reasoning")]
 
-    for reasoning_item in reasoning_items:
-        text = "\n".join(
+    reasoning_texts: List[str] = []
+    for reasoning_item in converted_output:
+        if reasoning_item.get("type") != "reasoning":
+            continue
+        reasoning_texts.extend(
             summary.get("text", "")
             for summary in reasoning_item.get("summary", [])
             if isinstance(summary, dict) and isinstance(summary.get("text"), str)
         )
-        emitted = add_item(reasoning_item)
-        if text:
-            emit_fn("response.reasoning_summary_text.delta", {"item_id": emitted.get("id"), "output_index": output.index(emitted), "delta": text})
-            emit_fn("response.reasoning_summary_text.done", {"item_id": emitted.get("id"), "output_index": output.index(emitted), "text": text})
-        emit_fn("response.output_item.done", {"output_index": output.index(emitted), "item": emitted})
 
-    for original_item in other_items:
-        if original_item.get("type") == "message":
-            message_parts: List[Dict[str, Any]] = []
-            legacy_reasoning_parts: List[str] = []
-            content = original_item.get("content")
-            if isinstance(content, list):
-                for part in content:
-                    if (
-                        not legacy_reasoning_parts
-                        and isinstance(part, dict)
-                        and part.get("type") in ("output_text", "text")
-                        and isinstance(part.get("text"), str)
-                    ):
-                        reasoning_text, remaining_text = split_thinking_text_block(part["text"])
-                        if reasoning_text:
-                            legacy_reasoning_parts.append(reasoning_text)
-                            if remaining_text:
-                                message_parts.append(dict(part, text=remaining_text))
-                            continue
-                    if isinstance(part, dict):
-                        message_parts.append(part)
-            item = dict(original_item, content=message_parts)
-
-            if legacy_reasoning_parts:
-                text = "\n".join(legacy_reasoning_parts)
-                reasoning_item = {
-                    "id": response_output_item_id(),
-                    "type": "reasoning",
-                    "status": "completed",
-                    "summary": [{"type": "summary_text", "text": text}],
-                }
-                emitted = add_item(reasoning_item)
-                emit_fn("response.reasoning_summary_text.delta", {"item_id": emitted["id"], "output_index": output.index(emitted), "delta": text})
-                emit_fn("response.reasoning_summary_text.done", {"item_id": emitted["id"], "output_index": output.index(emitted), "text": text})
-                emit_fn("response.output_item.done", {"output_index": output.index(emitted), "item": emitted})
-
-            emitted_message = add_item(item)
-            output_index = output.index(emitted_message)
-            output_text = "".join(
-                part.get("text", "")
-                for part in message_parts
-                if isinstance(part, dict) and part.get("type") in ("output_text", "text")
-            )
-            if message_parts:
-                emit_fn("response.content_part.added", {
-                    "item_id": emitted_message.get("id", message_id),
-                    "output_index": output_index,
-                    "content_index": 0,
-                    "part": dict(message_parts[0], text=""),
-                })
-                if output_text:
-                    emit_fn("response.output_text.delta", {"item_id": emitted_message.get("id", message_id), "output_index": output_index, "content_index": 0, "delta": output_text})
-                    emit_fn("response.output_text.done", {"item_id": emitted_message.get("id", message_id), "output_index": output_index, "content_index": 0, "text": output_text})
-                emit_fn("response.content_part.done", {"item_id": emitted_message.get("id", message_id), "output_index": output_index, "content_index": 0, "part": message_parts[0]})
-            emit_fn("response.output_item.done", {"output_index": output_index, "item": emitted_message})
-
-        elif original_item.get("type") == "function_call":
-            call_id = original_item.get("call_id") or original_item.get("id") or f"call_{response_id()}"
-            item = dict(original_item, id=call_id, call_id=call_id, status="in_progress")
-            output_index = len(output)
-            emit_fn("response.output_item.added", {"output_index": output_index, "item": item})
-            arguments = item.get("arguments", "{}")
-            emit_fn("response.function_call_arguments.delta", {"output_index": output_index, "item_id": call_id, "call_id": call_id, "delta": arguments})
-            emit_fn("response.function_call_arguments.done", {"output_index": output_index, "item_id": call_id, "call_id": call_id, "arguments": arguments})
-            completed_call = dict(item, status="completed")
-            emit_fn("response.output_item.done", {"output_index": output_index, "item": completed_call})
-            output.append(completed_call)
+    message_parts: List[Dict[str, Any]] = []
+    for original_item in message_items:
+        content = original_item.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if (
+                isinstance(part, dict)
+                and part.get("type") in ("output_text", "text")
+                and isinstance(part.get("text"), str)
+            ):
+                legacy_reasoning, remaining_text = split_thinking_text_block(part["text"])
+                if legacy_reasoning:
+                    reasoning_texts.append(legacy_reasoning)
+                if remaining_text:
+                    message_parts.append(dict(part, text=remaining_text))
+            elif isinstance(part, dict):
+                message_parts.append(part)
 
     # Preserve auto-mode compatibility when recovery lost all reasoning content.
-    if _thinking_requested and not any(item.get("type") == "reasoning" for item in output):
-        reasoning_item = {"id": response_output_item_id(), "type": "reasoning", "summary": [{"type": "summary_text", "text": _THINKING_PLACEHOLDER_TEXT}]}
-        emitted = add_item(reasoning_item)
-        emit_fn("response.reasoning_summary_text.delta", {"item_id": emitted["id"], "output_index": output.index(emitted), "delta": _THINKING_PLACEHOLDER_TEXT})
-        emit_fn("response.reasoning_summary_text.done", {"item_id": emitted["id"], "output_index": output.index(emitted), "text": _THINKING_PLACEHOLDER_TEXT})
-        emit_fn("response.output_item.done", {"output_index": output.index(emitted), "item": dict(emitted, status="completed")})
+    # Check only after legacy 🤔 blocks have been extracted from message text.
+    has_reasoning = bool(reasoning_texts) or any(item.get("type") == "reasoning" for item in converted_output)
+    if not has_reasoning and _thinking_requested:
+        reasoning_texts = [_THINKING_PLACEHOLDER_TEXT]
+    reasoning_text = "\n\n".join(part for part in reasoning_texts if part)
+    if reasoning_text:
+        reasoning_item = next(
+            (dict(item) for item in converted_output if item.get("type") == "reasoning"),
+            {"id": response_output_item_id(), "type": "reasoning"},
+        )
+        reasoning_item["summary"] = [{"type": "summary_text", "text": reasoning_text}]
+        emitted_reasoning = add_item(reasoning_item)
+        emit_fn("response.reasoning_summary_text.delta", {"item_id": emitted_reasoning.get("id"), "output_index": output.index(emitted_reasoning), "delta": reasoning_text})
+        emit_fn("response.reasoning_summary_text.done", {"item_id": emitted_reasoning.get("id"), "output_index": output.index(emitted_reasoning), "text": reasoning_text})
+        emitted_reasoning["status"] = "completed"
+        emit_fn("response.output_item.done", {"output_index": output.index(emitted_reasoning), "item": emitted_reasoning})
+
+    # Normalize adjacent recovered message fragments into one output_text part so
+    # downstream stream state and Codex rendering treat them as a single turn.
+    merged_parts: List[Dict[str, Any]] = []
+    for part in message_parts:
+        if (
+            merged_parts
+            and isinstance(part, dict)
+            and part.get("type") in ("output_text", "text")
+            and isinstance(part.get("text"), str)
+            and merged_parts[-1].get("type") in ("output_text", "text")
+        ):
+            merged_parts[-1] = dict(merged_parts[-1], text=merged_parts[-1].get("text", "") + part["text"])
+        else:
+            merged_parts.append(part)
+    message_parts = merged_parts
+
+    if message_parts:
+        base_message = message_items[0] if message_items else {"id": message_id, "type": "message", "role": "assistant"}
+        message_item = dict(base_message, content=message_parts)
+        emitted_message = add_item(message_item)
+        message_output_index = output.index(emitted_message)
+        output_text = "".join(
+            part.get("text", "")
+            for part in message_parts
+            if isinstance(part, dict) and part.get("type") in ("output_text", "text")
+        )
+        emit_fn("response.content_part.added", {
+            "item_id": emitted_message.get("id", message_id),
+            "output_index": message_output_index,
+            "content_index": 0,
+            "part": dict(message_parts[0], text=""),
+        })
+        if output_text:
+            emit_fn("response.output_text.delta", {"item_id": emitted_message.get("id", message_id), "output_index": message_output_index, "content_index": 0, "delta": output_text})
+            emit_fn("response.output_text.done", {"item_id": emitted_message.get("id", message_id), "output_index": message_output_index, "content_index": 0, "text": output_text})
+        emit_fn("response.content_part.done", {"item_id": emitted_message.get("id", message_id), "output_index": message_output_index, "content_index": 0, "part": message_parts[0]})
+        emitted_message["status"] = "completed"
+        emit_fn("response.output_item.done", {"output_index": message_output_index, "item": emitted_message})
+
+    for original_item in function_items:
+        call_id = original_item.get("call_id") or original_item.get("id") or f"call_{response_id()}"
+        item = dict(original_item, id=call_id, call_id=call_id, status="in_progress")
+        output_index = len(output)
+        emit_fn("response.output_item.added", {"output_index": output_index, "item": item})
+        arguments = item.get("arguments", "{}")
+        emit_fn("response.function_call_arguments.delta", {"output_index": output_index, "item_id": call_id, "call_id": call_id, "delta": arguments})
+        emit_fn("response.function_call_arguments.done", {"output_index": output_index, "item_id": call_id, "call_id": call_id, "arguments": arguments})
+        completed_call = dict(item, status="completed")
+        emit_fn("response.output_item.done", {"output_index": output_index, "item": completed_call})
+        output.append(completed_call)
 
     usage = converted.get("usage", {})
     emit_fn("response.completed", {

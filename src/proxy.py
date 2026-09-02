@@ -1136,18 +1136,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         # WHY: GLM 过渡 delta 把正文首句塞进同一 content 字段
                         # (extract_text_delta 已带在 parsed["content"])。闭合 reasoning
                         # code block 并把这段正文作为 message text 补发, 否则首句丢失。
-                        co_text = parsed.get("content") if isinstance(parsed, dict) else None
-                        if co_text:
-                            if _reasoning_code_open:
-                                _reasoning_code_open = False
-                                emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": "\n```\n\n"})
-                                output_text_parts.append("\n```\n\n")
-                            if not text_item_started:
-                                text_item_started = True
-                                emit("response.output_item.added", {"output_index": 0, "item": {"id": message_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})
-                                emit("response.content_part.added", {"item_id": message_id, "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": ""}})
-                            output_text_parts.append(co_text)
-                            emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": co_text})
+                    co_text = parsed.get("content") if isinstance(parsed, dict) else None
+                    if co_text:
+                        if _reasoning_code_open:
+                            _reasoning_code_open = False
+                            emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": "\n```\n\n"})
+                            output_text_parts.append("\n```\n\n")
+                        if not text_item_started:
+                            text_item_started = True
+                            emit("response.output_item.added", {"output_index": 0, "item": {"id": message_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})
+                            emit("response.content_part.added", {"item_id": message_id, "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": ""}})
+                        output_text_parts.append(co_text)
+                        emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": co_text})
                     elif kind in ("tool_call", "tool_call_delta", "tool_calls", "tool_calls_delta") and parsed:
                         merge_tool_call_payloads(tool_calls, parsed)
                     elif kind == "text_done" and parsed and parsed.get("text"):
