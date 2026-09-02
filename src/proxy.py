@@ -529,7 +529,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 send_json(self, 500, {"type": "error", "error": {"type": "authentication_error", "message": f"No API key configured for model {model_config.model_id}"}})
                 return
 
-            upstream_payload = anthropic_messages_to_upstream(body_for_upstream, model_config, fallback_model, upstream_model, config.default_stream)
+            upstream_payload = anthropic_messages_to_upstream(
+                body_for_upstream,
+                model_config,
+                fallback_model,
+                upstream_model,
+                config.default_stream,
+                tool_result_visible_fallback=config.tool_result_visible_fallback,
+            )
             upstream_payload = sanitized_upstream_payload_for_model(upstream_payload, model_config)
             auto_cache_marks = apply_auto_cache_control(upstream_payload) if model_config.api_format != "chat_completions" else 0
             log_debug(
@@ -595,7 +602,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
             if not auth_token:
                 send_json(self, 500, responses_error_payload(f"No API key configured for model {model_config.model_id}", "authentication_error"))
                 return
-            upstream_payload = responses_request_to_model_upstream(body_for_upstream, model_config, fallback_model, upstream_model, config.default_stream)
+            upstream_payload = responses_request_to_model_upstream(
+                body_for_upstream,
+                model_config,
+                fallback_model,
+                upstream_model,
+                config.default_stream,
+                tool_result_visible_fallback=config.tool_result_visible_fallback,
+            )
             upstream_payload = sanitized_upstream_payload_for_model(upstream_payload, model_config)
             auto_cache_marks = apply_auto_cache_control(upstream_payload) if model_config.api_format != "chat_completions" else 0
             log_debug(
@@ -857,7 +871,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
         try:
             body_for_upstream = sanitized_responses_body_for_model(body, model_config)
             # Always convert to chat_completions format for compact
-            upstream_payload = responses_request_to_chat_completions(body_for_upstream, fallback_model, upstream_model, config.default_stream)
+            upstream_payload = responses_request_to_chat_completions(
+                body_for_upstream,
+                fallback_model,
+                upstream_model,
+                config.default_stream,
+                tool_result_visible_fallback=config.tool_result_visible_fallback,
+            )
             upstream_payload = sanitized_upstream_payload_for_model(upstream_payload, model_config)
             upstream_payload["stream"] = False
             upstream_payload.pop("stream_options", None)

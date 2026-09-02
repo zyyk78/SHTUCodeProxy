@@ -1325,7 +1325,7 @@ def anthropic_message_to_chat_content(content: Any) -> Any:
     return content_to_chat_content(content)
 
 
-def anthropic_message_to_chat_messages(message: Dict[str, Any]) -> List[Dict[str, Any]]:
+def anthropic_message_to_chat_messages(message: Dict[str, Any], tool_result_visible_fallback: bool = True) -> List[Dict[str, Any]]:
     role = message.get("role", "user")
     if role not in ("user", "assistant", "system"):
         role = "user"
@@ -1338,9 +1338,14 @@ def anthropic_message_to_chat_messages(message: Dict[str, Any]) -> List[Dict[str
                 "tool_call_id": result.get("tool_use_id", ""),
                 "content": ("[ERROR] " if result.get("is_error") else "") + tool_result_content_to_text(result.get("content", "")),
             })
-        visible_text = anthropic_tool_results_visible_text(tool_results)
-        if text:
-            visible_text = f"{visible_text}\n\n{text}" if visible_text else text
+        # The standard tool message is always sent. The duplicated user message
+        # is only a compatibility fallback for upstreams that cannot read tool
+        # content reliably.
+        visible_text = text
+        if tool_result_visible_fallback:
+            visible_results = anthropic_tool_results_visible_text(tool_results)
+            if visible_results:
+                visible_text = f"{visible_results}\n\n{text}" if text else visible_results
         if visible_text:
             messages.append({"role": "user", "content": visible_text})
         return messages
@@ -1450,7 +1455,13 @@ def anthropic_messages_to_responses(body: Dict[str, Any], fallback_model: str, u
     return payload
 
 
-def anthropic_messages_to_chat_completions(body: Dict[str, Any], fallback_model: str, upstream_model: Optional[str] = None, default_stream: bool = True) -> Dict[str, Any]:
+def anthropic_messages_to_chat_completions(
+    body: Dict[str, Any],
+    fallback_model: str,
+    upstream_model: Optional[str] = None,
+    default_stream: bool = True,
+    tool_result_visible_fallback: bool = True,
+) -> Dict[str, Any]:
     messages: List[Dict[str, Any]] = []
 
     system = body.get("system")
@@ -1464,7 +1475,12 @@ def anthropic_messages_to_chat_completions(body: Dict[str, Any], fallback_model:
     for message in body.get("messages", []):
         if not isinstance(message, dict):
             continue
-        messages.extend(anthropic_message_to_chat_messages(message))
+        messages.extend(
+            anthropic_message_to_chat_messages(
+                message,
+                tool_result_visible_fallback=tool_result_visible_fallback,
+            )
+        )
 
     # Merge consecutive same-role messages to comply with chat_completions API
     merged: List[Dict[str, Any]] = []
@@ -1554,9 +1570,22 @@ def anthropic_messages_to_chat_completions(body: Dict[str, Any], fallback_model:
     return payload
 
 
-def anthropic_messages_to_upstream(body: Dict[str, Any], model_config: ModelConfig, fallback_model: str, upstream_model: Optional[str], default_stream: bool = True) -> Dict[str, Any]:
+def anthropic_messages_to_upstream(
+    body: Dict[str, Any],
+    model_config: ModelConfig,
+    fallback_model: str,
+    upstream_model: Optional[str],
+    default_stream: bool = True,
+    tool_result_visible_fallback: bool = True,
+) -> Dict[str, Any]:
     if model_config.api_format == "chat_completions":
-        return anthropic_messages_to_chat_completions(body, fallback_model, upstream_model, default_stream)
+        return anthropic_messages_to_chat_completions(
+            body,
+            fallback_model,
+            upstream_model,
+            default_stream,
+            tool_result_visible_fallback=tool_result_visible_fallback,
+        )
     return anthropic_messages_to_responses(body, fallback_model, upstream_model, default_stream)
 
 
@@ -1657,7 +1686,13 @@ def _truncate_visible_text(text: str) -> str:
     return f"{text[:sample]}\n\n... (省略 {len(text) - 2 * sample} 字符) ...\n\n{text[-sample:]}"
 
 
-def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: str, upstream_model: Optional[str] = None, default_stream: bool = True) -> Dict[str, Any]:
+def responses_request_to_chat_completions(
+    body: Dict[str, Any],
+    fallback_model: str,
+    upstream_model: Optional[str] = None,
+    default_stream: bool = True,
+    tool_result_visible_fallback: bool = True,
+) -> Dict[str, Any]:
     """性能优化版本: 单遍状态机 + OrderedDict + 延迟 visible_text 生成.
 
     主要优化:
@@ -1750,7 +1785,9 @@ def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: 
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": tool_content})
                 # 性能优化: 仅保存原始 (call_id, content), 不立即生成 visible_text
                 # 截断在 _flush_visible 时统一处理
-                if output_text:
+                # Keep the standard tool content unconditionally; this extra
+                # user-visible copy is only for upstreams that ignore tool roles.
+                if tool_result_visible_fallback and output_text:
                     deferred_visible_blocks.append((call_id, output_text))
                 continue
             # 其他类型: 先 flush 所有累积
@@ -1879,9 +1916,22 @@ def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: 
     return payload
 
 
-def responses_request_to_model_upstream(body: Dict[str, Any], model_config: ModelConfig, fallback_model: str, upstream_model: Optional[str], default_stream: bool = True) -> Dict[str, Any]:
+def responses_request_to_model_upstream(
+    body: Dict[str, Any],
+    model_config: ModelConfig,
+    fallback_model: str,
+    upstream_model: Optional[str],
+    default_stream: bool = True,
+    tool_result_visible_fallback: bool = True,
+) -> Dict[str, Any]:
     if model_config.api_format == "chat_completions":
-        return responses_request_to_chat_completions(body, fallback_model, upstream_model, default_stream)
+        return responses_request_to_chat_completions(
+            body,
+            fallback_model,
+            upstream_model,
+            default_stream,
+            tool_result_visible_fallback=tool_result_visible_fallback,
+        )
     return responses_request_to_upstream(body, fallback_model, upstream_model, default_stream)
 
 
