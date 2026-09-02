@@ -2065,6 +2065,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 "content_block": {"type": "text", "text": ""},
             })
             text_block_started = True
+            output_text_parts.append(reasoning_text)
+            write_sse(self, "content_block_delta", {
+                "type": "content_block_delta",
+                "index": text_block_index,
+                "delta": {"type": "text_delta", "text": reasoning_text},
+            })
         # WHY: Close the thinking block if it was started during streaming
         if thinking_block_started:
             write_sse(self, "content_block_stop", {"type": "content_block_stop", "index": _thinking_block_index - 1})
