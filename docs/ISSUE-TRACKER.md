@@ -236,7 +236,7 @@
 | **现象** | `glm-5.3-flash` 实际支持图片，但当前转换器未稳定透传图片，图片可能被替换为占位文本 |
 | **根因** | 本地/旧配置缺失 `glm-5.3-flash` 时 `find_model` 回退到 `glm-chat` 且 `supports_image=false`；Anthropic 路径也缺少 Codex 路径已有的图片能力自动修正，导致 base64 图片在进入转换器前被降级 |
 | **修复日期** | 2026-09-02 |
-| **修复提交** | 未提交（当前开发分支待合并） |
+| **修复提交** | 179b342 |
 | **开发记录** | docs/dev-notes/2026-09-02-glm-flash-image-routing.md |
 | **回归测试** | GLM flash 双协议图片转换回归 PASS；文本-only 降级保护 PASS；targeted pytest 16 PASS；py_compile PASS；模块导入 PASS |
 
