@@ -151,7 +151,9 @@ class ModelConfig:
 
 def default_supports_image(model_id: Any, upstream_model: Any = None) -> bool:
     model_text = f"{model_id or ''} {upstream_model or ''}".lower()
-    return "gpt-5.5" in model_text or "qwen-instruct" in model_text
+    # WHY: glm-chat is the campus route name for the multimodal GLM 5.3 Flash
+    # backend, so it must default to image-capable instead of degrading images.
+    return "gpt-5.5" in model_text or "qwen-instruct" in model_text or "glm-chat" in model_text or "glm-5.3-flash" in model_text
 
 
 def default_supports_reasoning(model_id: Any, upstream_model: Any = None) -> bool:

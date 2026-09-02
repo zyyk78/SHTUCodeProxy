@@ -1498,7 +1498,8 @@ def exercise_multimodal_capability_config() -> None:
     deepseek_model = ModelConfig.from_dict({"model_id": "deepseek-chat", "upstream_model": "deepseek-chat", "api_format": "chat_completions"})
     assert_true(gpt_model.supports_image and not gpt_model.supports_audio and not gpt_model.supports_video, "GPT-5.5 should default to image-only multimodal support")
     assert_true(qwen_model.supports_image and not qwen_model.supports_audio and not qwen_model.supports_video, "qwen-instruct should default to image-only multimodal support")
-    assert_true(not glm_model.supports_image and not glm_model.supports_audio and not glm_model.supports_video, "glm-chat should default to text-only")
+    assert_true(glm_model.supports_image and not glm_model.supports_audio and not glm_model.supports_video, "glm-chat should default to image-only multimodal support")
+    assert_true(ModelConfig.from_dict({"model_id": "glm-5.3-flash", "upstream_model": "glm-5.3-flash", "api_format": "chat_completions"}).supports_image, "GLM flash should default to image support")
     assert_true(not deepseek_model.supports_image and not deepseek_model.supports_audio and not deepseek_model.supports_video, "deepseek-chat should default to text-only")
     assert_true(ModelConfig.from_dict({"model_id": "custom-vision", "supports_image": True}).supports_image, "explicit image config should be preserved")
     assert_true(ModelConfig.from_dict({"model_id": "legacy-vision", "supports_multimodal": True}).supports_image, "legacy multimodal config should enable image support")
@@ -1507,28 +1508,28 @@ def exercise_multimodal_capability_config() -> None:
     responses_body = {"input": [{"role": "user", "content": [{"type": "input_text", "text": "look"}, {"type": "input_image", "image_url": "https://example.invalid/a.png"}]}]}
     assert_true(anthropic_current_user_modalities(anthropic_body) == {"image"}, "Anthropic current image input should be detected")
     assert_true(responses_current_user_modalities(responses_body) == {"image"}, "Responses current image input should be detected")
-    assert_true(unsupported_modalities(glm_model, {"image", "audio"}) == {"image", "audio"}, "Unsupported modalities should be specific")
-    assert_true("图片识别" in unsupported_modalities_message(glm_model, {"image"}), "Unsupported message should be user-facing")
+    assert_true(unsupported_modalities(deepseek_model, {"image", "audio"}) == {"image", "audio"}, "Unsupported modalities should be specific")
+    assert_true("图片识别" in unsupported_modalities_message(deepseek_model, {"image"}), "Unsupported message should be user-facing")
 
     vision_tools = [
         {"name": "view_image", "description": "Render and inspect an image or screenshot", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}},
         {"name": "read_file", "description": "Read a text file", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}},
     ]
-    glm_tools_body = sanitized_anthropic_body_for_model({"tools": vision_tools, "tool_choice": {"type": "tool", "name": "view_image"}, "messages": []}, glm_model)
+    text_only_tools_body = sanitized_anthropic_body_for_model({"tools": vision_tools, "tool_choice": {"type": "tool", "name": "view_image"}, "messages": []}, deepseek_model)
     qwen_tools_body = sanitized_anthropic_body_for_model({"tools": vision_tools, "tool_choice": {"type": "tool", "name": "view_image"}, "messages": []}, qwen_model)
-    assert_true([tool["name"] for tool in glm_tools_body["tools"]] == ["read_file"], "Image-disabled model should not receive view_image tool")
-    assert_true(glm_tools_body["tool_choice"] == {"type": "auto"}, "Forced removed image tool should fall back to auto")
+    assert_true([tool["name"] for tool in text_only_tools_body["tools"]] == ["read_file"], "Image-disabled model should not receive view_image tool")
+    assert_true(text_only_tools_body["tool_choice"] == {"type": "auto"}, "Forced removed image tool should fall back to auto")
     assert_true(any(tool["name"] == "view_image" for tool in qwen_tools_body["tools"]), "Image-capable model should keep view_image tool")
 
     anthropic_history_body = {
         "messages": [
             anthropic_body["messages"][0],
-            {"role": "assistant", "content": [{"type": "text", "text": "模型 glm-chat 当前配置为不支持图片识别。"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "模型 deepseek-chat 当前配置为不支持图片识别。"}]},
             {"role": "user", "content": "继续回答纯文本"},
         ]
     }
     assert_true(not anthropic_current_user_modalities(anthropic_history_body), "Historical image should not block current text-only Anthropic turn")
-    sanitized_anthropic = sanitized_anthropic_body_for_model(anthropic_history_body, glm_model)
+    sanitized_anthropic = sanitized_anthropic_body_for_model(anthropic_history_body, deepseek_model)
     assert_true(not any(isinstance(part, dict) and part.get("type") == "image" for part in sanitized_anthropic["messages"][0]["content"]), "Historical Anthropic image should not reach a text-only model")
     assert_true(any(isinstance(part, dict) and part.get("text") for part in sanitized_anthropic["messages"][0]["content"]), "Text-only model should receive an image placeholder instead of an empty current turn")
     qwen_sanitized_anthropic = sanitized_anthropic_body_for_model(anthropic_body, qwen_model)
@@ -1542,23 +1543,23 @@ def exercise_multimodal_capability_config() -> None:
         ]
     }
     assert_true(not anthropic_current_user_modalities(anthropic_tool_image_body), "Historical tool image should not block current Anthropic text turn")
-    sanitized_tool_image = sanitized_anthropic_body_for_model(anthropic_tool_image_body, glm_model)
+    sanitized_tool_image = sanitized_anthropic_body_for_model(anthropic_tool_image_body, deepseek_model)
     assert_true("data:image" not in json.dumps(sanitized_tool_image), "Anthropic tool_result image data should not reach image-disabled models")
     assert_true("已移除当前模型不支持" in json.dumps(sanitized_tool_image, ensure_ascii=False), "Anthropic tool_result image should become a visible placeholder")
     assert_true("view_image" not in json.dumps(sanitized_tool_image), "Anthropic visual tool_use should be stripped for image-disabled models")
     anthropic_tool_data_url_body = {"messages": [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_img", "content": "data:image/png;base64,AAAA"}]}]}
-    sanitized_tool_data_url = sanitized_anthropic_body_for_model(anthropic_tool_data_url_body, glm_model)
+    sanitized_tool_data_url = sanitized_anthropic_body_for_model(anthropic_tool_data_url_body, deepseek_model)
     assert_true("data:image" not in json.dumps(sanitized_tool_data_url), "Anthropic tool_result data URL should be removed for image-disabled models")
 
     responses_history_body = {
         "input": [
             responses_body["input"][0],
-            {"role": "assistant", "content": [{"type": "output_text", "text": "模型 glm-chat 当前配置为不支持图片识别。"}]},
+            {"role": "assistant", "content": [{"type": "output_text", "text": "模型 deepseek-chat 当前配置为不支持图片识别。"}]},
             {"role": "user", "content": [{"type": "input_text", "text": "继续回答纯文本"}]},
         ]
     }
     assert_true(not responses_current_user_modalities(responses_history_body), "Historical image should not block current text-only Responses turn")
-    sanitized_responses = sanitized_responses_body_for_model(responses_history_body, glm_model)
+    sanitized_responses = sanitized_responses_body_for_model(responses_history_body, deepseek_model)
     assert_true(not any(isinstance(part, dict) and part.get("type") == "input_image" for part in sanitized_responses["input"][0]["content"]), "Historical Responses image should be stripped before forwarding to text-only model")
     qwen_sanitized_responses = sanitized_responses_body_for_model(responses_body, qwen_model)
     assert_true(any(isinstance(part, dict) and part.get("type") == "input_image" for part in qwen_sanitized_responses["input"][0]["content"]), "Image-capable Responses model should keep image input even if audio/video are disabled")
@@ -1571,11 +1572,11 @@ def exercise_multimodal_capability_config() -> None:
         ]
     }
     assert_true(not responses_current_user_modalities(responses_tool_image_body), "Historical tool image should not block current Responses text turn")
-    sanitized_responses_tool_image = sanitized_responses_body_for_model(responses_tool_image_body, glm_model)
+    sanitized_responses_tool_image = sanitized_responses_body_for_model(responses_tool_image_body, deepseek_model)
     assert_true("data:image" not in json.dumps(sanitized_responses_tool_image), "Responses function_call_output image data should not reach image-disabled models")
     assert_true("view_image" not in json.dumps(sanitized_responses_tool_image), "Responses visual function_call should be stripped for image-disabled models")
     responses_tool_data_url_body = {"input": [{"type": "function_call_output", "call_id": "call_img", "output": "data:image/png;base64,AAAA"}]}
-    sanitized_responses_tool_data_url = sanitized_responses_body_for_model(responses_tool_data_url_body, glm_model)
+    sanitized_responses_tool_data_url = sanitized_responses_body_for_model(responses_tool_data_url_body, deepseek_model)
     assert_true("data:image" not in json.dumps(sanitized_responses_tool_data_url), "Responses function_call_output data URL should be removed for image-disabled models")
 
     stale_chat_payload = {
@@ -1587,33 +1588,33 @@ def exercise_multimodal_capability_config() -> None:
             ],
         }]
     }
-    cleaned_chat_payload = sanitized_upstream_payload_for_model(stale_chat_payload, glm_model)
+    cleaned_chat_payload = sanitized_upstream_payload_for_model(stale_chat_payload, deepseek_model)
     assert_true("data:image" not in json.dumps(cleaned_chat_payload), "Final Chat payload sanitizer should remove stale image data for image-disabled models")
     assert_true("已移除当前模型不支持" in json.dumps(cleaned_chat_payload, ensure_ascii=False), "Final Chat payload sanitizer should keep an image placeholder")
     image_only_payload = {"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]}]}
-    cleaned_image_only = sanitized_upstream_payload_for_model(image_only_payload, glm_model)
+    cleaned_image_only = sanitized_upstream_payload_for_model(image_only_payload, deepseek_model)
     assert_true(cleaned_image_only["messages"][0]["content"], "Final sanitizer should not leave empty chat content after removing unsupported image")
 
     stale_responses_payload = {"input": [{"role": "user", "content": [{"type": "input_text", "text": "old image"}, {"type": "input_image", "image_url": "data:image/png;base64,AAAA"}]}]}
-    cleaned_responses_payload = sanitized_upstream_payload_for_model(stale_responses_payload, glm_model)
+    cleaned_responses_payload = sanitized_upstream_payload_for_model(stale_responses_payload, deepseek_model)
     assert_true("data:image" not in json.dumps(cleaned_responses_payload), "Final Responses payload sanitizer should remove stale image data for image-disabled models")
     assert_true("已移除当前模型不支持" in json.dumps(cleaned_responses_payload, ensure_ascii=False), "Final Responses payload sanitizer should keep an image placeholder")
     stale_tool_output_payload = {"input": [{"type": "function_call_output", "call_id": "call_img", "output": [{"type": "input_image", "image_url": "data:image/png;base64,AAAA"}]}]}
-    cleaned_tool_output_payload = sanitized_upstream_payload_for_model(stale_tool_output_payload, glm_model)
+    cleaned_tool_output_payload = sanitized_upstream_payload_for_model(stale_tool_output_payload, deepseek_model)
     assert_true("data:image" not in json.dumps(cleaned_tool_output_payload), "Final sanitizer should remove nested tool output image data")
     assert_true("已移除当前模型不支持" in json.dumps(cleaned_tool_output_payload, ensure_ascii=False), "Final sanitizer should keep nested tool output placeholders")
-    cleaned_tool_data_url_payload = sanitized_upstream_payload_for_model({"input": [{"type": "function_call_output", "call_id": "call_img", "output": "data:image/png;base64,AAAA"}]}, glm_model)
+    cleaned_tool_data_url_payload = sanitized_upstream_payload_for_model({"input": [{"type": "function_call_output", "call_id": "call_img", "output": "data:image/png;base64,AAAA"}]}, deepseek_model)
     assert_true("data:image" not in json.dumps(cleaned_tool_data_url_payload), "Final sanitizer should remove nested tool output data URLs")
     image_only_responses = {"input": [{"role": "user", "content": [{"type": "input_image", "image_url": "data:image/png;base64,AAAA"}]}]}
-    cleaned_image_only_responses = sanitized_upstream_payload_for_model(image_only_responses, glm_model)
+    cleaned_image_only_responses = sanitized_upstream_payload_for_model(image_only_responses, deepseek_model)
     assert_true(cleaned_image_only_responses["input"][0]["content"], "Final sanitizer should not leave empty Responses content after removing unsupported image")
-    current_image_responses = sanitized_responses_body_for_model(responses_body, glm_model)
-    current_image_payload = responses_request_to_chat_completions(current_image_responses, "glm-chat")
+    current_image_responses = sanitized_responses_body_for_model(responses_body, deepseek_model)
+    current_image_payload = responses_request_to_chat_completions(current_image_responses, "deepseek-chat")
     assert_true("data:image" not in json.dumps(current_image_payload), "Current Codex image request should be downgraded before reaching text-only Chat upstream")
     assert_true("已移除当前模型不支持" in json.dumps(current_image_payload, ensure_ascii=False), "Current Codex image request should continue with a text placeholder instead of proxy-side blocking")
 
-    current_image_anthropic = sanitized_anthropic_body_for_model(anthropic_body, glm_model)
-    current_image_chat = anthropic_messages_to_chat_completions(current_image_anthropic, "glm-chat")
+    current_image_anthropic = sanitized_anthropic_body_for_model(anthropic_body, deepseek_model)
+    current_image_chat = anthropic_messages_to_chat_completions(current_image_anthropic, "deepseek-chat")
     assert_true("data:image" not in json.dumps(current_image_chat), "Current Claude image request should be downgraded before reaching text-only Chat upstream")
     assert_true("已移除当前模型不支持" in json.dumps(current_image_chat, ensure_ascii=False), "Current Claude image request should continue with a text placeholder instead of proxy-side blocking")
 
@@ -1621,7 +1622,7 @@ def exercise_multimodal_capability_config() -> None:
         "messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}],
         "tools": [{"type": "function", "function": {"name": "shell", "parameters": {"type": "object", "properties": {"command": {"type": "array", "items": {"type": "string"}}}}}}],
     }
-    cleaned_codex_payload = sanitized_upstream_payload_for_model(codex_payload_with_tools, glm_model)
+    cleaned_codex_payload = sanitized_upstream_payload_for_model(codex_payload_with_tools, deepseek_model)
     assert_true(cleaned_codex_payload["tools"][0]["function"]["parameters"]["type"] == "object", "Final sanitizer should not inspect ordinary tool JSON schema type values")
 
 

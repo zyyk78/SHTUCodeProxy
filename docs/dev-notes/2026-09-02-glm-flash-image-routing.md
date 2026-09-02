@@ -30,7 +30,7 @@
 
 ### Step 2: 修复能力识别
 
-- 改动：在 Anthropic Messages 路径镜像 Codex Responses 路径的逻辑——当前用户消息包含图片且配置标记不支持图片时，仅在本次请求运行时将 `supports_image` 修正为 true。
+- 改动：在 Anthropic Messages 路径镜像 Codex Responses 路径的逻辑——当前用户消息包含图片且配置标记不支持图片时，仅在本次请求运行时将 `supports_image` 修正为 true。随后确认 `glm-chat` 就是 GLM 5.3 Flash，因此默认能力表也加入 `glm-chat` / `glm-5.3-flash`，并修正本地配置中显式的 false。
 - 验证：`glm-5.3-flash` 的 Claude base64 图片和 Codex `input_image` 都生成 Chat `image_url`；text-only 模型仍降级。
 
 ## 验证结果
@@ -40,12 +40,13 @@
 | 模块导入 | ✅ |
 | py_compile | ✅ |
 | 功能验证（GLM flash 图片双协议转换） | ✅ |
+| 功能验证（glm-chat 默认图片能力） | ✅ |
 | 回归验证（targeted pytest） | ✅ 16 passed |
 | 完整冒烟测试 | ⚠️ 仍在历史 `Codex Chat payload should get automatic cache boundaries` 失败，与本修复无关 |
 
 ## 改动摘要
 
-修复 `glm-5.3-flash` 等多模态 Chat 模型在 Anthropic 路径下的能力识别。配置缺失或能力标记为 false 时，当前用户消息包含图片会触发运行时修正，随后正常转换为 `image_url`；不做永久配置写入，也不改变 text-only 模型的保护。
+修复 `glm-chat` / `glm-5.3-flash` 的多模态能力识别：默认能力表确认 `glm-chat` 映射 GLM 5.3 Flash 并允许图片；Anthropic 路径增加请求级能力修正；本地配置中显式 false 已改为 true。显式 `supports_image=false` 仍然优先，text-only 模型降级保护保持不变。
 
 ## 回滚方案
 

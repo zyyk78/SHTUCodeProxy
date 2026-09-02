@@ -234,11 +234,11 @@
 | **发现人** | 用户反馈 |
 | **影响范围** | Codex `/responses` 与 Claude `/v1/messages` 发送图片；Chat Completions 转换路径 |
 | **现象** | `glm-5.3-flash` 实际支持图片，但当前转换器未稳定透传图片，图片可能被替换为占位文本 |
-| **根因** | 本地/旧配置缺失 `glm-5.3-flash` 时 `find_model` 回退到 `glm-chat` 且 `supports_image=false`；Anthropic 路径也缺少 Codex 路径已有的图片能力自动修正，导致 base64 图片在进入转换器前被降级 |
+| **根因** | `glm-chat` 实际映射 GLM 5.3 Flash，但默认能力表把 `glm-chat` 标记为不支持图片；本地配置也显式写入 false，Anthropic 路径缺少 Codex 路径已有的图片能力自动修正，导致 base64 图片在进入转换器前被降级 |
 | **修复日期** | 2026-09-02 |
 | **修复提交** | 179b342 |
 | **开发记录** | docs/dev-notes/2026-09-02-glm-flash-image-routing.md |
-| **回归测试** | GLM flash 双协议图片转换回归 PASS；文本-only 降级保护 PASS；targeted pytest 16 PASS；py_compile PASS；模块导入 PASS |
+| **回归测试** | GLM flash 双协议图片转换回归 PASS；`glm-chat` 默认能力修正 PASS；文本-only 降级保护 PASS；targeted pytest 16 PASS；py_compile PASS；模块导入 PASS |
 
 
 ---

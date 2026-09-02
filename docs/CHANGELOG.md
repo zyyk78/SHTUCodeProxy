@@ -8,6 +8,7 @@
 - **P1**: Preserved `/responses` as a Codex-compatible alias for `/v1/responses` and normalized root/`/v1`/full-endpoint upstream base URLs.
 - **P2**: Synced the GUI with the backend config model by exposing and persisting `tool_result_visible_fallback`; added regression coverage for GUI save behavior.
 - **P1**: Added Anthropic image-request runtime capability correction for multimodal Chat models such as `glm-5.3-flash`; base64 images now convert to `image_url` instead of being degraded before upstream.
+- **P1**: Corrected default `glm-chat` capability metadata to image-capable because it maps to the GLM 5.3 Flash backend; explicit `supports_image=false` still takes precedence.
 
 ## v4.8.0 (2026-06-11)
 
