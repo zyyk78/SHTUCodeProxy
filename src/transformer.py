@@ -1073,6 +1073,36 @@ def split_thinking_text_block(text: str) -> Tuple[str, str]:
     return match.group(1).strip(), text[match.end():].strip()
 
 
+def normalize_thinking_text_block_in_message_content(content: Any) -> Any:
+    """Normalize legacy 🤔 Thinking text blocks in Responses message content."""
+    if not isinstance(content, list):
+        return content
+    normalized = False
+    new_content: List[Dict[str, Any]] = []
+    for part in content:
+        if (
+            not normalized
+            and isinstance(part, dict)
+            and part.get("type") in ("output_text", "text")
+            and isinstance(part.get("text"), str)
+        ):
+            reasoning_text, remaining_text = split_thinking_text_block(part["text"])
+            if reasoning_text:
+                new_content.append({
+                    "id": response_output_item_id(),
+                    "type": "reasoning",
+                    "status": "completed",
+                    "summary": [{"type": "summary_text", "text": reasoning_text}],
+                })
+                if remaining_text:
+                    new_content.append(dict(part, text=remaining_text))
+                normalized = True
+                continue
+        new_content.append(part)
+    text_parts = [part.get("text") for part in new_content if isinstance(part, dict) and part.get("type") in ("output_text", "text")]
+    return "\n".join(text for text in text_parts if text) if normalized else content
+
+
 def strip_markdown_json_fence(text: str) -> str:
     stripped = text.strip()
     match = re.fullmatch(r"```(?:json|JSON)?\s*(.*?)\s*```", stripped, flags=re.DOTALL)
@@ -1694,7 +1724,10 @@ def responses_request_to_chat_completions(body: Dict[str, Any], fallback_model: 
             _flush_pending()
             role = item.get("role") or ("assistant" if item_type == "message" else "user")
             message_role = "system" if role == "developer" else role
-            message = {"role": message_role, "content": responses_content_to_chat_content(item.get("content"))}
+            # WHY: Normalize before content_to_chat_content(), otherwise a legacy
+            # reasoning item would already be flattened into message text.
+            item_content = normalize_thinking_text_block_in_message_content(item.get("content"))
+            message = {"role": message_role, "content": responses_content_to_chat_content(item_content)}
             if message["role"] == "system":
                 if not has_cache_metadata(item.get("content")):
                     message["content"] = responses_content_to_text(item.get("content"))
@@ -2697,6 +2730,11 @@ def extract_anthropic_usage(done_payload: Optional[Dict[str, Any]], chat_stream_
 
 def _codex_emit_recovered_response(emit_fn, request_id: str, message_id: str, converted: Dict[str, Any], model_config: ModelConfig, _thinking_requested: bool = False) -> None:
     """Emit a complete Responses SSE sequence from a recovered non-stream Chat Completions response."""
+    # Normalize legacy reasoning text in recovered Responses output before any
+    # deltas are emitted.
+    for output_item in converted.get("output", []):
+        if isinstance(output_item, dict) and output_item.get("type") == "message":
+            output_item["content"] = normalize_thinking_text_block_in_message_content(output_item.get("content"))
     # Emit output item added
     emit_fn("response.output_item.added", {
         "output_index": 0,

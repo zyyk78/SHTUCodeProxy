@@ -75,6 +75,7 @@ from transformer import (
     unsupported_modalities_message,
     # Thinking
     strip_thinking_markup, strip_markdown_json_fence, split_thinking_text_block,
+    normalize_thinking_text_block_in_message_content,
     extract_balanced_json, quote_unquoted_json_keys, parse_json_like_object,
     tool_result_content_to_text, escape_tool_result_attr,
     anthropic_tool_results_visible_text,
@@ -866,6 +867,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
                     )
                     output_text = responses_json_output_text(converted.get("output", []))
+                    _block_reasoning, output_text = split_thinking_text_block(output_text)
                     self.send_responses_text_stream(model_config, output_text, estimate_anthropic_input_tokens(body))
                     log_info(f"codex compact stream_bridge done model={model_config.model_id} chars={len(output_text)}")
                     return
@@ -1171,6 +1173,26 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
 
         output_text = "".join(output_text_parts)
+
+        # WHY: The model may imitate the proxy's legacy reasoning format in its
+        # message text. Split that leading block before tool-call parsing so it
+        # is restored as a real Responses reasoning item rather than rendered
+        # as literal "🤔 Thinking" message text.
+        if output_text and not reasoning_parts:
+            _block_reasoning, _block_rest = split_thinking_text_block(output_text)
+            if _block_reasoning:
+                reasoning_parts.append(_block_reasoning)
+                output_text = _block_rest
+                if _reasoning_code_open:
+                    _reasoning_code_open = False
+                    emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": "\n```\n\n"})
+                    output_text_parts.append("\n```\n\n")
+                if not text_item_started:
+                    text_item_started = True
+                    emit("response.output_item.added", {"output_index": 0, "item": {"id": message_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []}})
+                    emit("response.content_part.added", {"item_id": message_id, "output_index": 0, "content_index": 0, "part": {"type": "output_text", "text": ""}})
+                    emit("response.output_text.delta", {"item_id": message_id, "output_index": 0, "content_index": 0, "delta": " "})
+                emit("response.reasoning_summary_text.delta", {"item_id": reasoning_item_id, "output_index": 0, "delta": _block_reasoning})
 
         output_text, pseudo_tool_calls = parse_pseudo_function_calls(output_text, body.get("tools"))
         if pseudo_tool_calls:
