@@ -149,3 +149,5 @@ tmp/*
 tests/reports/*
 tests/integration/__pycache__/
 !tests/reports/.gitkeep
+# Runtime stdout dumps from nohup invocations
+nohup.out
