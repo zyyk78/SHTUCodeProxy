@@ -126,7 +126,7 @@ from transformer import (
 )
 
 from config_store import (
-    CLAUDE_MODEL_ALIASES, AppConfig, ModelConfig,
+    CLAUDE_MODEL_ALIASES, AppConfig, ConfigError, ModelConfig,
     config_path, load_config,
 )
 
@@ -2328,7 +2328,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Anthropic Messages to OpenAI Responses proxy")
-    config = load_config()
+    try:
+        config = load_config()
+    except ConfigError as exc:
+        # 配置错误（如模型路由名重复）直接中止，避免静默丢弃/遮蔽模型。
+        log_error(f"FATAL: invalid config: {exc}")
+        print(f"[SHTUCodeProxy] FATAL: invalid config: {exc}", file=sys.stderr)
+        sys.exit(1)
     parser.add_argument("--host", default=os.getenv("HOST", config.host))
     parser.add_argument("--port", type=int, default=int(os.getenv("PORT", str(config.port))))
     args = parser.parse_args()

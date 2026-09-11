@@ -1,0 +1,57 @@
+{
+  "host": "127.0.0.1",
+  "port": 8091,
+  "timeout": 300,
+  "default_stream": true,
+  "auth_key": "shangshi",
+  "log_level": 2,
+  "ssl_cert": "",
+  "ssl_key": "",
+  "allowed_ips": ["127.0.0.1"],
+  "denied_ips": [],
+
+  "models": [
+    {
+      "name": "glm-chat",
+      "upstream_model": "glm-chat",
+      "base_url": "https://genaiapi.shanghaitech.edu.cn/api/v1/start",
+      "api_key": "PUT_YOUR_API_KEY_HERE",
+      "api_format": "chat_completions",
+      "supports_image": true,
+      "supports_audio": false,
+      "supports_video": false,
+      "stream_bridge": false,
+      "max_context_tokens": 500000,
+      "supports_reasoning": true,
+      "enable_thinking": true
+    },
+    {
+      "name": "deepseek-pro",
+      "upstream_model": "deepseek-pro",
+      "base_url": "https://genaiapi.shanghaitech.edu.cn/api/v1/start",
+      "api_key": "PUT_YOUR_API_KEY_HERE",
+      "api_format": "chat_completions",
+      "supports_image": true,
+      "supports_audio": false,
+      "supports_video": false,
+      "stream_bridge": false,
+      "max_context_tokens": 500000,
+      "supports_reasoning": true,
+      "enable_thinking": true
+    },
+    {
+      "name": "minimax3-claude",
+      "upstream_model": "MiniMax-M3",
+      "base_url": "https://api.minimaxi.com/anthropic",
+      "api_key": "PUT_YOUR_API_KEY_HERE",
+      "max_context_tokens": 500000
+    },
+    {
+      "name": "minimax3-codex",
+      "upstream_model": "MiniMax-M3",
+      "base_url": "https://api.minimax.cn",
+      "api_key": "PUT_YOUR_API_KEY_HERE",
+      "max_context_tokens": 500000
+    }
+  ]
+}

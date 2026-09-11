@@ -1,0 +1,42 @@
+[Unit]
+Description=SHTUCodeProxy - Anthropic API 代理服务
+Documentation=https://github.com/zyyk78/SHTUCodeProxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# 工作目录设为 src/ (proxy.py 的模块导入依赖同目录下的 logger/transformer/config_store)
+WorkingDirectory=/opt/SHTUProxy
+
+# Python 路径（anaconda3）
+ExecStart=/opt/anaconda3/bin/python3 /opt/SHTUProxy/proxy.py
+
+# 优雅关闭: 先 SIGTERM，超时后 SIGKILL
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# 崩溃后自动重启
+Restart=on-failure
+RestartSec=5
+
+# 防止无限重启循环：60秒内重启超过3次则放弃
+StartLimitInterval=60
+StartLimitBurst=3
+
+# 环境变量（可在 override.conf 中覆盖）
+Environment=PYTHONUNBUFFERED=1
+
+# 安全加固（可选）
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+# 日志输出到 journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=shtu-proxy
+
+[Install]
+WantedBy=default.target

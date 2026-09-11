@@ -19,6 +19,10 @@ DEFAULT_CHAT_COMPLETIONS_URL = "https://genaiapi.shanghaitech.edu.cn/api/v1/star
 DEFAULT_UPSTREAM_URL = DEFAULT_RESPONSES_URL
 DEFAULT_API_FORMAT = "responses"
 DEFAULT_MODEL_ID = "GPT-5.5"
+
+
+class ConfigError(Exception):
+    """配置错误（如模型路由名重复）。启动时应中止，避免静默丢弃/遮蔽模型。"""
 CODEX_SANDBOX_MODES = ("read-only", "workspace-write", "danger-full-access")
 DEFAULT_CODEX_SANDBOX_MODE = "danger-full-access"
 CODEX_APPROVAL_POLICIES = ("never", "on-failure", "untrusted", "on-request")
@@ -109,14 +113,24 @@ class ModelConfig:
         # so the proxy must also know to handle it as thinking blocks.
         if self.enable_thinking:
             self.supports_reasoning = True
+        # WHY: 统一配置只需 `name` + `upstream_model` 两个字段；`model_id` 作为
+        # 本地路由键由 `name` 派生（客户端在请求体 model 里填的就是 name）。
+        if not self.model_id:
+            self.model_id = self.name
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ModelConfig":
-        model_id = str(data.get("model_id") or data.get("id") or DEFAULT_MODEL_ID).strip()
-        upstream_model = str(data.get("upstream_model") or model_id).strip()
-        legacy_multimodal = bool_from_config(data.get("supports_multimodal"), default_supports_image(model_id, upstream_model))
+        # 统一 schema: name = 本地路由名, upstream_model = 上游真实模型名.
+        # 兼容旧配置: 仅写 model_id 时, name 与 upstream_model 均回退到它;
+        # 同时写了 model_id 与 name 时以 name 为路由名, upstream_model 回退到 model_id.
+        raw_name = data.get("name")
+        raw_model_id = data.get("model_id") or data.get("id")
+        name = str(raw_name or raw_model_id or DEFAULT_MODEL_ID).strip()
+        model_id = name  # 派生: 与 name 保持一致
+        upstream_model = str(data.get("upstream_model") or raw_model_id or name).strip()
+        legacy_multimodal = bool_from_config(data.get("supports_multimodal"), default_supports_image(name, upstream_model))
         return cls(
-            name=str(data.get("name") or model_id).strip(),
+            name=name,
             model_id=model_id,
             base_url=str(data.get("base_url") or DEFAULT_UPSTREAM_URL).strip(),
             api_key=str(data.get("api_key") or "").strip(),
@@ -134,10 +148,9 @@ class ModelConfig:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "name": self.name,
-            "model_id": self.model_id,
+            "upstream_model": self.upstream_model,
             "base_url": self.base_url,
             "api_key": self.api_key,
-            "upstream_model": self.upstream_model,
             "api_format": self.api_format,
             "supports_image": self.supports_image,
             "supports_audio": self.supports_audio,
@@ -239,7 +252,7 @@ class AppConfig:
             denied_ips=[],
             models=[
                 ModelConfig(
-                    name="Default GPT-5.5",
+                    name=DEFAULT_MODEL_ID,
                     model_id=DEFAULT_MODEL_ID,
                     base_url=DEFAULT_UPSTREAM_URL,
                     api_key="",
@@ -375,17 +388,17 @@ def config_path() -> Path:
 def seed_builtin_model_routes(config: AppConfig) -> AppConfig:
     existing = {m.model_id for m in config.models}
     routes = [
-        ("DeepSeek Pro", "deepseek-pro", DEFAULT_CHAT_COMPLETIONS_URL, "chat_completions"),
-        ("GPT-5.5", "GPT-5.5", DEFAULT_RESPONSES_URL, "responses"),
-        ("GLM Chat", "glm-chat", DEFAULT_CHAT_COMPLETIONS_URL, "chat_completions"),
-        ("DeepSeek Chat", "deepseek-chat", DEFAULT_CHAT_COMPLETIONS_URL, "chat_completions"),
-        ("Qwen Instruct", "qwen-instruct", DEFAULT_CHAT_COMPLETIONS_URL, "chat_completions"),
+        ("deepseek-pro", DEFAULT_CHAT_COMPLETIONS_URL, "chat_completions"),
+        ("GPT-5.5", DEFAULT_RESPONSES_URL, "responses"),
+        ("glm-chat", DEFAULT_CHAT_COMPLETIONS_URL, "chat_completions"),
+        ("deepseek-chat", DEFAULT_CHAT_COMPLETIONS_URL, "chat_completions"),
+        ("qwen-instruct", DEFAULT_CHAT_COMPLETIONS_URL, "chat_completions"),
     ]
-    for name, model_id, base_url, api_format in routes:
+    for model_id, base_url, api_format in routes:
         if model_id in existing:
             continue
         config.models.append(ModelConfig(
-            name=name,
+            name=model_id,
             model_id=model_id,
             base_url=base_url,
             api_key="",
@@ -399,6 +412,24 @@ def seed_builtin_model_routes(config: AppConfig) -> AppConfig:
     return config
 
 
+def ensure_unique_model_ids(config: AppConfig) -> None:
+    """校验模型路由名唯一。
+
+    name（内部即 model_id）是 find_model 的路由键，重复时只会命中第一个、
+    其余被静默遮蔽。此处直接抛 ConfigError，由调用方决定中止启动。
+    """
+    seen: Dict[str, int] = {}
+    for index, model in enumerate(config.models, start=1):
+        key = model.model_id
+        if key in seen:
+            raise ConfigError(
+                f"Duplicate model name/model_id '{key}': "
+                f"models #{seen[key]} and #{index} conflict. "
+                f"每个模型的 name（即内部 model_id）必须唯一，否则后者会被静默遮蔽。"
+            )
+        seen[key] = index
+
+
 def load_config(path: Optional[Path] = None) -> AppConfig:
     target = path or config_path()
     if not target.exists():
@@ -407,9 +438,12 @@ def load_config(path: Optional[Path] = None) -> AppConfig:
         save_config(config, target)
         return config
     try:
-        return AppConfig.from_dict(json.loads(target.read_text(encoding="utf-8-sig")))
+        config = AppConfig.from_dict(json.loads(target.read_text(encoding="utf-8-sig")))
     except Exception:
         return seed_builtin_model_routes(AppConfig.default())
+    # 注意: 校验放在 try 之外，重复路由名不会被上面的 noexcept 回退吞掉。
+    ensure_unique_model_ids(config)
+    return config
 
 
 def save_config(config: AppConfig, path: Optional[Path] = None) -> None:
