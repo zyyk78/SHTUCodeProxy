@@ -1,6 +1,10 @@
 # SHTUCodeProxy
 
-一个轻量级的 **Anthropic ↔ OpenAI 协议代理服务器**，让 Claude Code / Codex CLI 可以对接非 Anthropic 的上游模型（上海科技大学 genaiapi 网关、MiniMax 等）。
+申请到上科大无限量大模型的API了吗？
+
+**好，把他们上市！**
+
+本项目可以帮你进行模型转换，把你申请到的API接入Claude Code、CodeX等玩意，并且聚合你自己的其他校外API
 
 ⚠本项目 fork 自 `SaberJack` 的原始项目，但是因为两边需求和代码库差别越来越大，因此目前作为独立分支维护。主要改动：拆分重构后端代码、新增**透传模式**（直接对接原生 Anthropic / OpenAI Responses 上游）、补充安全配置、日志分级、性能优化与若干 bug 修复。
 
@@ -8,15 +12,7 @@
 
 ---
 
-## 核心能力
-
-申请到上科大无限量大模型的API了吗？
-
-**好，把他们上市！**
-
-本项目可以把你申请到的API接入Claude Code、CodeX
-
-核心功能如下：
+## 主要功能
 
 - 转换（网关）模式，将你的编程工具接入上科大的 LLM API，适用于上科大这种一个模型一个key的零散场景
 - 透传模式，可以自由在校内模型和你自己买的模型之间切换（类似于CC-Switch）
