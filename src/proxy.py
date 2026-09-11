@@ -1684,19 +1684,28 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         write_sse(self, "content_block_start", {"type": "content_block_start", "index": block_index, "content_block": {"type": "thinking", "thinking": ""}})
                         if thinking_text:
                             write_sse(self, "content_block_delta", {"type": "content_block_delta", "index": block_index, "delta": {"type": "thinking_delta", "thinking": thinking_text}})
+                    elif block_type == "text":
+                        # WHY: Mirror _emit_anthropic_message_as_stream — start with an
+                        # empty text block, send the body only via text_delta, so
+                        # delta-accumulating SDKs do not render the text twice.
+                        write_sse(self, "content_block_start", {
+                            "type": "content_block_start",
+                            "index": block_index,
+                            "content_block": {"type": "text", "text": ""},
+                        })
+                        if block.get("text"):
+                            write_sse(self, "content_block_delta", {
+                                "type": "content_block_delta",
+                                "index": block_index,
+                                "delta": {"type": "text_delta", "text": block["text"]},
+                            })
                     else:
                         write_sse(self, "content_block_start", {
                             "type": "content_block_start",
                             "index": block_index,
                             "content_block": block,
                         })
-                        if block_type == "text" and block.get("text"):
-                            write_sse(self, "content_block_delta", {
-                                "type": "content_block_delta",
-                                "index": block_index,
-                                "delta": {"type": "text_delta", "text": block["text"]},
-                            })
-                        elif block_type == "tool_use":
+                        if block_type == "tool_use":
                             write_sse(self, "content_block_delta", {
                                 "type": "content_block_delta",
                                 "index": block_index,
@@ -1924,18 +1933,27 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     with open_upstream(fallback_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
                         raw_payload = response.read().decode("utf-8", errors="replace")
                     chat_json = _orjson_loads(raw_payload)
-                    converted = chat_completion_json_to_responses(
-                        chat_json,
-                        model_config.model_id,
-                        estimate_value_tokens(body.get("messages")),
-                        fallback_payload.get("tools") if isinstance(fallback_payload.get("tools"), list) else None,
-                        thinking_requested(body),
-                    )
-                    if converted.get("output"):
-                        anthropic_msg = responses_json_to_anthropic_message(converted, model_config)
-                        log_error(f"stream http error recovered via non-stream model={model_config.model_id}")
-                        self._emit_anthropic_message_as_stream(anthropic_msg, _thinking_block_index)
-                        return
+                    # WHY: genaiapi returns HTTP 200 with {"success": false,
+                    # "message": "Failed to load image: ..."} for the non-stream
+                    # retry of a corrupt/undecodable image. Surface that reason to
+                    # the client instead of falling through to the opaque empty-body
+                    # "Upstream HTTP 500:" message.
+                    if isinstance(chat_json, dict) and chat_json.get("success") is False:
+                        message = chat_json.get("message") or _orjson_dumps_str(chat_json)[:300]
+                        log_error(f"stream http error non-stream fallback rejected model={model_config.model_id} message={message[:200]}")
+                    else:
+                        converted = chat_completion_json_to_responses(
+                            chat_json,
+                            model_config.model_id,
+                            estimate_value_tokens(body.get("messages")),
+                            fallback_payload.get("tools") if isinstance(fallback_payload.get("tools"), list) else None,
+                            thinking_requested(body),
+                        )
+                        if converted.get("output"):
+                            anthropic_msg = responses_json_to_anthropic_message(converted, model_config)
+                            log_error(f"stream http error recovered via non-stream model={model_config.model_id}")
+                            self._emit_anthropic_message_as_stream(anthropic_msg, _thinking_block_index)
+                            return
                 except Exception as fallback_exc:
                     log_error(f"stream http error non-stream fallback failed model={model_config.model_id} error={fallback_exc}")
             self._send_anthropic_stream_error(message, text_block_started, text_block_stopped, _thinking_block_index)
@@ -1950,7 +1968,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if pseudo_tool_calls:
             for pseudo_tool_call in pseudo_tool_calls:
                 merge_tool_call_payloads(tool_calls, pseudo_tool_call)
-        if not output_text and not tool_calls:
+        # WHY: When the client requested extended thinking and upstream returned
+        # reasoning only (glm-chat's common behaviour under enable_thinking), the
+        # answer has already been streamed as a collapsible thinking block and the
+        # visible text is legitimately empty. Re-issuing a non-stream request in
+        # that case is pure waste — it costs a second upstream call and still
+        # returns empty content (verified: 8/8 empty), and the extra round-trip is
+        # exactly the "frequent non-stream fallback" symptom. Only run the recovery
+        # machinery when we truly have nothing (no text, no tools, no reasoning).
+        _reasoning_covers_answer = thinking_requested(body) and bool(reasoning_parts)
+        if not output_text and not tool_calls and not _reasoning_covers_answer:
             # WHY: When upstream returns 200 but stream deltas contain no text
             # (e.g. upstream skipped incremental events, or all deltas were
             # filtered by filter_thinking_text_delta), retry with a non-streaming
@@ -2149,11 +2176,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 # Emit as content_block_start with the redacted data, then stop.
                 # Claude Code recognizes this as thinking support without showing text.
                 write_sse(self, "content_block_start", {"type": "content_block_start", "index": block_index, "content_block": {"type": "redacted_thinking", "data": block.get("data", "")}})
+            elif block_type == "text":
+                # WHY: Anthropic protocol requires content_block_start to carry an
+                # empty text; the body must arrive via text_delta. Putting the full
+                # text in content_block_start AND re-sending it as text_delta makes
+                # SDKs that accumulate deltas (anthropic python: content.text +=
+                # delta.text) render the message twice.
+                write_sse(self, "content_block_start", {"type": "content_block_start", "index": block_index, "content_block": {"type": "text", "text": ""}})
+                if block.get("text"):
+                    write_sse(self, "content_block_delta", {"type": "content_block_delta", "index": block_index, "delta": {"type": "text_delta", "text": block["text"]}})
             else:
                 write_sse(self, "content_block_start", {"type": "content_block_start", "index": block_index, "content_block": block})
-                if block_type == "text" and block.get("text"):
-                    write_sse(self, "content_block_delta", {"type": "content_block_delta", "index": block_index, "delta": {"type": "text_delta", "text": block["text"]}})
-                elif block_type == "tool_use":
+                if block_type == "tool_use":
                     write_sse(self, "content_block_delta", {"type": "content_block_delta", "index": block_index, "delta": {"type": "input_json_delta", "partial_json": json_dumps_compact(block.get("input", {}))}})
             write_sse(self, "content_block_stop", {"type": "content_block_stop", "index": block_index})
         usage = anthropic_msg.get("usage", {}) if isinstance(anthropic_msg.get("usage"), dict) else {}

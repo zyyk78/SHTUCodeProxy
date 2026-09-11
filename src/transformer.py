@@ -1209,12 +1209,70 @@ def tool_result_content_to_text(content: Any) -> str:
     return str(content)
 
 
+def tool_result_content_to_chat_content(content: Any, is_error: bool = False) -> Any:
+    """Convert an Anthropic tool_result content into Chat Completions content.
+
+    WHY: tool_result content can carry image blocks — Claude Code's Read tool
+    returns images this way. The old path flattened it through
+    anthropic_content_to_text(), collapsing the image to the literal "[image]"
+    and losing the pixels, while the equivalent Responses path
+    (responses_content_to_chat_content) preserved them. Route through
+    content_to_chat_content() so media parts become an image_url array (verified
+    accepted by genaiapi/glm-chat, which then actually sees the image); fall
+    back to plain text otherwise.
+    """
+    prefix = "[ERROR] " if is_error else ""
+    if isinstance(content, str):
+        return prefix + content
+    chat_content = content_to_chat_content(content)
+    if isinstance(chat_content, list):
+        return ([{"type": "text", "text": prefix}] if prefix else []) + chat_content
+    text = chat_content if isinstance(chat_content, str) else tool_result_content_to_text(content)
+    return prefix + text
+
+
 def escape_tool_result_attr(value: Any) -> str:
     return str(value or "").replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 # 性能优化: 内部 helper (避免函数调用开销)
 _escape_attr = escape_tool_result_attr
+
+
+def _tool_result_has_media(content: Any) -> bool:
+    if not isinstance(content, list):
+        return False
+    return any(isinstance(part, dict) and part.get("type") in MODALITY_PART_TYPES["image"] | MODALITY_PART_TYPES["audio"] | MODALITY_PART_TYPES["video"] for part in content)
+
+
+def anthropic_tool_results_visible_content(tool_results: List[Dict[str, Any]]) -> Any:
+    """Build the duplicated user-visible tool_result copy.
+
+    Returns a plain string when every tool_result is text-only (preserving the
+    established contract), but a structured content list when any tool_result
+    carries media (e.g. Claude Code's Read tool returning an image). Media must
+    survive so upstreams that cannot read the tool role still receive the image.
+    """
+    if not any(_tool_result_has_media(r.get("content")) for r in tool_results):
+        return anthropic_tool_results_visible_text(tool_results)
+    parts: List[Dict[str, Any]] = [{"type": "text", "text": "<tool_results>"}]
+    for result in tool_results:
+        attrs = [f'tool_use_id="{escape_tool_result_attr(result.get("tool_use_id", ""))}"']
+        if "is_error" in result:
+            attrs.append(f'is_error="{str(bool(result.get("is_error"))).lower()}"')
+        parts.append({"type": "text", "text": f"<tool_result {' '.join(attrs)}>"})
+        content = result.get("content", "")
+        if isinstance(content, list):
+            chat_parts = content_to_chat_content(content)
+            if isinstance(chat_parts, list):
+                parts.extend(chat_parts)
+            else:
+                parts.append({"type": "text", "text": chat_parts})
+        else:
+            parts.append({"type": "text", "text": tool_result_content_to_text(content)})
+        parts.append({"type": "text", "text": "</tool_result>"})
+    parts.append({"type": "text", "text": "</tool_results>"})
+    return parts
 
 
 def anthropic_tool_results_visible_text(tool_results: List[Dict[str, Any]]) -> str:
@@ -1336,16 +1394,21 @@ def anthropic_message_to_chat_messages(message: Dict[str, Any], tool_result_visi
             messages.append({
                 "role": "tool",
                 "tool_call_id": result.get("tool_use_id", ""),
-                "content": ("[ERROR] " if result.get("is_error") else "") + tool_result_content_to_text(result.get("content", "")),
+                "content": tool_result_content_to_chat_content(result.get("content", ""), bool(result.get("is_error"))),
             })
         # The standard tool message is always sent. The duplicated user message
         # is only a compatibility fallback for upstreams that cannot read tool
         # content reliably.
         visible_text = text
         if tool_result_visible_fallback:
-            visible_results = anthropic_tool_results_visible_text(tool_results)
+            visible_results = anthropic_tool_results_visible_content(tool_results)
             if visible_results:
-                visible_text = f"{visible_results}\n\n{text}" if text else visible_results
+                if isinstance(visible_results, list):
+                    # Media-bearing tool result: keep the structured list so the
+                    # image survives; append trailing user text as a text part.
+                    visible_text = visible_results + ([{"type": "text", "text": text}] if text else [])
+                else:
+                    visible_text = f"{visible_results}\n\n{text}" if text else visible_results
         if visible_text:
             messages.append({"role": "user", "content": visible_text})
         return messages
@@ -2543,6 +2606,14 @@ def chat_completion_json_to_responses(
     for offset, tool_call in enumerate(parsed_tool_calls):
         output.append(codex_function_call_item(normalize_tool_call_name_for_tools(tool_call, tools), offset, normalize_shell_aliases=False))
     response_payload = responses_completed_payload(response_id(), model, output, input_tokens, output_text)
+    if _wants_thinking:
+        # WHY: Stamp the thinking flag onto the converted payload so callers that
+        # immediately turn it into an Anthropic message (stream_bridge recovery,
+        # non-stream recovery, HTTPError fallback) route reasoning into a real
+        # thinking block. Without this the recovery path re-derives thinking from
+        # the payload, misses the flag, and leaks reasoning as literal
+        # "🤔 Thinking" plain text — which crashes Claude Code's renderer.
+        response_payload["_thinking_requested"] = True
     usage = payload.get("usage")
     if isinstance(usage, dict):
         response_payload["usage"] = responses_usage_from_chat_usage(usage, response_payload["usage"]["input_tokens"], output_text)
