@@ -374,11 +374,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
     # 健康检查路径：不包含敏感信息，豁免鉴权
     _HEALTH_PATHS = ("/", "/health", "/v1")
 
+    # 鉴权豁免路径：模型列表只回显 config 里已配置的模型 id，不含任何敏感信息，
+    # 客户端（Codex Desktop / Claude Code / OpenAI SDK 等）在发现模型阶段常常还不带
+    # key。要求鉴权会让这些客户端直接报 401 而根本走不到对话流程。
+    _AUTH_EXEMPT_PATHS = _HEALTH_PATHS + ("/v1/models", "/models")
+
     def do_HEAD(self) -> None:
         if not self.check_ip():
             return
         path = self.route_path()
-        if path in self._HEALTH_PATHS:
+        if path in self._AUTH_EXEMPT_PATHS:
             self.send_response(200)
             self.send_header("content-type", "application/json; charset=utf-8")
             self.end_headers()
@@ -395,8 +400,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if path in self._HEALTH_PATHS:
             send_json(self, 200, {"ok": True, "service": "shtu-claude-proxy"})
             return
-        if not self.check_auth():
-            return
+        # 模型列表豁免鉴权：放在 check_auth 之前，未提供 key 也能发现模型。
         if path in ("/v1/models", "/models"):
             config = current_config()
             models = []
@@ -427,6 +431,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 models.append(alias_entry)
                 seen_ids.add(alias_id)
             send_json(self, 200, {"object": "list", "data": models})
+            return
+        if not self.check_auth():
             return
         # GET /v1/responses/{response_id} - Codex may query stored responses
         rp = self.route_path()

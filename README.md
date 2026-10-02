@@ -41,7 +41,7 @@
 
 - **default_stream**：默认开启流式输出
 
-- **auth_key**：就是你自定义下游接入所需的key
+- **auth_key**：就是你自定义下游接入所需的key。健康检查（`/`、`/health`、`/v1`）和模型列表（`/v1/models`、`/models`）不需要 key，其他接口都需要
 
 - **log_level**：日志等级，0-3分别为silent、error、info、debug
 
