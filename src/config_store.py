@@ -231,7 +231,7 @@ class AppConfig:
             codex_approval_policy=DEFAULT_CODEX_APPROVAL_POLICY,
             codex_personality=DEFAULT_CODEX_PERSONALITY,
             codex_reasoning_effort=DEFAULT_CODEX_REASONING_EFFORT,
-            model_env={key: DEFAULT_MODEL_ID for key in MODEL_ENV_KEYS},
+            model_env={key: "" for key in MODEL_ENV_KEYS},
             timeout=300,
             claude_path=default_claude_path(),
             claude_settings_path=default_claude_settings_path(),
@@ -284,8 +284,11 @@ class AppConfig:
         if codex_reasoning_effort not in CODEX_REASONING_EFFORTS:
             codex_reasoning_effort = default.codex_reasoning_effort
         raw_model_env = data.get("model_env") if isinstance(data.get("model_env"), dict) else {}
+        # 未显式配置的键留空，不要 fallback 到 default_model_id：
+        # 否则 /v1/models 会把每个 Claude 别名都指向第一个模型，刷出一堆并不存在的 claude 模型；
+        # find_model 侧空值会被跳过，路由行为不变。
         model_env = {
-            key: str(raw_model_env.get(key) or default_model_id).strip()
+            key: str(raw_model_env.get(key) or "").strip()
             for key in MODEL_ENV_KEYS
         }
         result = cls(
