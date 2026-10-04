@@ -25,7 +25,7 @@ from dataclasses import replace
 
 # 日志模块
 from logger import (
-    log, log_error, log_info, log_debug,
+    log, log_error, log_info, log_debug, log_warn,
     now_ms, _orjson_dumps, _orjson_dumps_str, _orjson_loads,
     _HAS_ORJSON, json_dumps_compact, usage_cache_debug, usage_summary,
     register_active_config,
@@ -92,6 +92,8 @@ from transformer import (
     # Responses conversion
     responses_request_to_upstream, responses_content_to_text,
     responses_content_to_chat_content, responses_tool_to_chat_tool,
+    responses_tools_to_chat_tools, responses_namespace_flat_name,
+    responses_output_tool_calls, responses_output_has_content,
     responses_tool_choice_to_chat, enable_chat_stream_usage,
     responses_usage_from_chat_usage,
     # Truncation
@@ -129,6 +131,7 @@ from config_store import (
     CLAUDE_MODEL_ALIASES, AppConfig, ConfigError, ModelConfig,
     config_path, load_config,
 )
+from plugin_manager import load_route_plugins, route_plugins
 
 # 模块级配置缓存，由 main() 初始化
 ACTIVE_CONFIG: Optional[AppConfig] = None
@@ -184,6 +187,24 @@ class _BodyTooLargeError(Exception):
     pass
 
 
+class _ClientDisconnectedError(Exception):
+    """Raised when a streaming emit discovers the downstream client is gone."""
+    pass
+
+
+def _is_client_disconnect(exc: BaseException) -> bool:
+    """Return True for TCP/TLS write failures caused by client disconnect."""
+    return isinstance(
+        exc,
+        (
+            ConnectionResetError,
+            ConnectionAbortedError,
+            BrokenPipeError,
+            ssl.SSLError,
+        ),
+    )
+
+
 def send_json(handler: BaseHTTPRequestHandler, status: int, payload: Dict[str, Any]) -> None:
     # 性能优化: orjson 默认输出 UTF-8 且 ensure_ascii=False
     data = _orjson_dumps(payload)
@@ -219,8 +240,12 @@ def write_sse(handler, event: str, data) -> None:
     try:
         handler.wfile.write(payload.encode("utf-8"))
         handler.wfile.flush()
-    except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
-        pass  # 客户端已断开，静默忽略
+    except Exception as exc:
+        if _is_client_disconnect(exc):
+            # TLS disconnect may surface as BAD_LENGTH or SSLEOFError.
+            return False
+        raise
+    return True
 
 
 def write_sse_batch(handler, events: List[Tuple[str, Any]]) -> None:
@@ -236,16 +261,24 @@ def write_sse_batch(handler, events: List[Tuple[str, Any]]) -> None:
     try:
         handler.wfile.write("".join(buf).encode("utf-8"))
         handler.wfile.flush()
-    except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
-        pass  # 客户端已断开，静默忽略
+    except Exception as exc:
+        if _is_client_disconnect(exc):
+            # TLS disconnect may surface as BAD_LENGTH or SSLEOFError.
+            return False
+        raise
+    return True
 
 
 def write_data_sse(handler: BaseHTTPRequestHandler, data: str) -> None:
     try:
         handler.wfile.write(f"data: {data}\n\n".encode("utf-8"))
         handler.wfile.flush()
-    except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
-        pass  # 客户端已断开，静默忽略
+    except Exception as exc:
+        if _is_client_disconnect(exc):
+            # TLS disconnect may surface as BAD_LENGTH or SSLEOFError.
+            return False
+        raise
+    return True
 
 
 def emit_redacted_thinking_sse(handler: BaseHTTPRequestHandler, index: int = 0) -> None:
@@ -367,7 +400,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:
         self.send_response(204)
         self.send_header("access-control-allow-origin", "*")
-        self.send_header("access-control-allow-methods", "GET,POST,OPTIONS")
+        self.send_header("access-control-allow-methods", "GET,POST,DELETE,OPTIONS")
         self.send_header("access-control-allow-headers", "*")
         self.end_headers()
 
@@ -378,6 +411,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if not self.check_ip():
             return
         path = self.route_path()
+        for plugin in route_plugins():
+            try:
+                if plugin.handles("HEAD", path) and plugin.handle(self, current_config(), plugin):
+                    return
+            except Exception as exc:
+                log_error(f"plugin HEAD error plugin={type(plugin).__name__} path={path} error={exc}")
+                self.send_response(500); self.end_headers()
+                return
         if path in self._HEALTH_PATHS:
             self.send_response(200)
             self.send_header("content-type", "application/json; charset=utf-8")
@@ -397,6 +438,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
         if not self.check_auth():
             return
+        for plugin in route_plugins():
+            try:
+                if plugin.handles("GET", path):
+                    if plugin.handle(self, current_config(), plugin):
+                        return
+            except Exception as exc:
+                log_error(f"plugin GET error plugin={type(plugin).__name__} path={path} error={exc}")
+                try:
+                    send_json(self, 500, {"type": "error", "error": {"type": "plugin_error", "message": str(exc)}})
+                except Exception:
+                    pass
+                return
         if path in ("/v1/models", "/models"):
             config = current_config()
             models = []
@@ -444,6 +497,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
             return
         route_path = self.route_path()
         log_info("do_POST path={} raw_path={}".format(route_path, self.path))
+        for plugin in route_plugins():
+            try:
+                if plugin.handles("POST", route_path) and plugin.handle(self, current_config(), plugin):
+                    return
+            except Exception as exc:
+                log_error(f"plugin POST error plugin={type(plugin).__name__} path={route_path} error={exc}")
+                try:
+                    send_json(self, 500, {"type": "error", "error": {"type": "plugin_error", "message": str(exc)}})
+                except Exception:
+                    pass
+                return
         if route_path in ("/v1/messages/count_tokens", "/messages/count_tokens"):
             try:
                 body = read_json_body(self)
@@ -675,6 +739,26 @@ class ProxyHandler(BaseHTTPRequestHandler):
             ("response.completed", {"type": "response.completed", "sequence_number": 8, "response": responses_completed_payload(request_id, model_config.model_id, output, input_tokens, text)}),
         ])
         self.close_connection = True
+
+    def do_DELETE(self) -> None:
+        if not self.check_ip():
+            return
+        if not self.check_auth():
+            return
+        path = self.route_path()
+        for plugin in route_plugins():
+            try:
+                if plugin.handles("DELETE", path):
+                    if plugin.handle(self, current_config(), plugin):
+                        return
+            except Exception as exc:
+                log_error(f"plugin DELETE error plugin={type(plugin).__name__} path={path} error={exc}")
+                try:
+                    send_json(self, 500, {"type": "error", "error": {"type": "plugin_error", "message": str(exc)}})
+                except Exception:
+                    pass
+                return
+        send_json(self, 404, {"type": "error", "error": {"type": "not_found_error", "message": "Not found"}})
 
     @staticmethod
     def _passthrough_target_url(upstream_url: str, route: str) -> str:
@@ -1029,10 +1113,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
             payload.setdefault("type", event_type)
             payload.setdefault("sequence_number", sequence_number)
             sequence_number += 1
-            write_sse(self, event_type, payload)
+            if not write_sse(self, event_type, payload):
+                raise _ClientDisconnectedError(event_type)
 
-        emit("response.created", {"response": {"id": request_id, "object": "response", "created_at": int(time.time()), "status": "in_progress", "model": model_config.model_id, "output": []}})
-        emit("response.in_progress", {"response": {"id": request_id, "status": "in_progress"}})
+        try:
+            emit("response.created", {"response": {"id": request_id, "object": "response", "created_at": int(time.time()), "status": "in_progress", "model": model_config.model_id, "output": []}})
+            emit("response.in_progress", {"response": {"id": request_id, "status": "in_progress"}})
+        except _ClientDisconnectedError as exc:
+            # WHY: this failure happens before any meaningful stream body; do not
+            # send another failed event to a disconnected socket.
+            log_error(f"codex downstream client disconnected before stream model={model_config.model_id} event={exc}")
+            self.close_connection = True
+            return
         stream_bridge = model_config.stream_bridge
         if model_config.api_format == "chat_completions" and stream_bridge:
             non_stream_payload = dict(upstream_payload)
@@ -1204,6 +1296,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
             write_data_sse(self, "[DONE]")
             self.close_connection = True
             return
+        except _ClientDisconnectedError as exc:
+            log_error(f"codex downstream client disconnected during response stream model={model_config.model_id} event={exc}")
+            self.close_connection = True
+            return
         except Exception as exc:
             log_error(f"codex upstream connection error model={model_config.model_id} format={model_config.api_format} error={exc}")
             emit("response.failed", {"response": {"id": request_id, "status": "failed", "error": {"type": "api_error", "message": f"Upstream connection error: {exc}"}}})
@@ -1261,45 +1357,65 @@ class ProxyHandler(BaseHTTPRequestHandler):
             retry_payload = dict(upstream_payload)
             retry_payload["stream"] = False
             retry_payload.pop("stream_options", None)
-            try:
-                with open_upstream(retry_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
-                    raw_payload = response.read().decode("utf-8", errors="replace")
-                fallback_payload = _orjson_loads(raw_payload)
-                # WHY: Check if non-stream retry returned an error response
-                if isinstance(fallback_payload, dict):
-                    err = fallback_payload.get("error")
-                    if isinstance(err, dict) and err.get("message"):
-                        codex_upstream_error = codex_upstream_error or err["message"]
-                        if err.get("type") and codex_upstream_error_type == "api_error":
-                            codex_upstream_error_type = err["type"]
-                        log_error(f"codex stream retry returned error model={model_config.model_id} type={codex_upstream_error_type} error={err['message'][:200]}")
-                    elif fallback_payload.get("object") == "error" and fallback_payload.get("message"):
-                        codex_upstream_error = codex_upstream_error or fallback_payload["message"]
-                        if fallback_payload.get("type") and codex_upstream_error_type == "api_error":
-                            codex_upstream_error_type = fallback_payload["type"]
-                        log_error(f"codex stream retry returned error model={model_config.model_id} type={codex_upstream_error_type} error={fallback_payload['message'][:200]}")
-                    elif fallback_payload.get("detail") and isinstance(fallback_payload.get("detail"), str):
-                        codex_upstream_error = codex_upstream_error or fallback_payload["detail"]
-                        log_error(f"codex stream retry returned error model={model_config.model_id} detail={fallback_payload['detail'][:200]}")
-                log_info(f"codex empty stream fallback model={model_config.model_id}")
-                output_text = response_text_from_upstream_json(fallback_payload)
-                if not output_text and isinstance(fallback_payload.get("choices"), list):
-                    converted = chat_completion_json_to_responses(
-                        fallback_payload,
-                        model_config.model_id,
-                        estimate_anthropic_input_tokens(body),
-                        retry_payload.get("tools") if isinstance(retry_payload.get("tools"), list) else None,
-                        thinking_requested(body),
-                    )
-                    output_text = responses_json_output_text(converted.get("output", []))
-                log_info(f"codex empty stream fallback model={model_config.model_id} chars={len(output_text)}")
-            except urllib.error.HTTPError as retry_http_exc:
-                retry_err = upstream_error_details(retry_http_exc)
-                codex_upstream_error = codex_upstream_error or retry_err.get("message", "")
-                codex_upstream_error_type = retry_err.get("type", "api_error")
-                log_error(f"codex stream retry http error model={model_config.model_id} type={codex_upstream_error_type} {retry_err.get('message','')[:200]}")
-            except Exception as exc:
-                log_error(f"codex empty stream fallback failed model={model_config.model_id} error={exc}")
+            # WHY: 空回合 (只有 reasoning, 既无正文也无工具调用) 时重试。
+            # 旧实现只取回文本, 把重试里返回的**工具调用全丢了** —— 于是模型本来
+            # 要发的 close_agent 被降级成一句“现在关闭它”, 客户端看到的就是
+            # “工具没执行”。现在文本与工具调用一起回收, 且重试次数可配置。
+            empty_retries = max(0, int(getattr(model_config, "empty_turn_retries", 1) or 0))
+            for attempt in range(empty_retries + 1):
+                try:
+                    with open_upstream(retry_payload, auth_token, upstream_url, timeout, model_config.api_format) as response:
+                        raw_payload = response.read().decode("utf-8", errors="replace")
+                    fallback_payload = _orjson_loads(raw_payload)
+                    # WHY: Check if non-stream retry returned an error response
+                    if isinstance(fallback_payload, dict):
+                        err = fallback_payload.get("error")
+                        if isinstance(err, dict) and err.get("message"):
+                            codex_upstream_error = codex_upstream_error or err["message"]
+                            if err.get("type") and codex_upstream_error_type == "api_error":
+                                codex_upstream_error_type = err["type"]
+                            log_error(f"codex stream retry returned error model={model_config.model_id} type={codex_upstream_error_type} error={err['message'][:200]}")
+                        elif fallback_payload.get("object") == "error" and fallback_payload.get("message"):
+                            codex_upstream_error = codex_upstream_error or fallback_payload["message"]
+                            if fallback_payload.get("type") and codex_upstream_error_type == "api_error":
+                                codex_upstream_error_type = fallback_payload["type"]
+                            log_error(f"codex stream retry returned error model={model_config.model_id} type={codex_upstream_error_type} error={fallback_payload['message'][:200]}")
+                        elif fallback_payload.get("detail") and isinstance(fallback_payload.get("detail"), str):
+                            codex_upstream_error = codex_upstream_error or fallback_payload["detail"]
+                            if fallback_payload.get("type") and codex_upstream_error_type == "api_error":
+                                codex_upstream_error_type = fallback_payload["type"]
+                            log_error(f"codex stream retry returned error model={model_config.model_id} detail={fallback_payload['detail'][:200]}")
+                    log_info(f"codex empty stream fallback model={model_config.model_id} attempt={attempt + 1}/{empty_retries + 1}")
+                    output_text = response_text_from_upstream_json(fallback_payload)
+                    recovered_output: List[Dict[str, Any]] = []
+                    if not output_text and isinstance(fallback_payload.get("choices"), list):
+                        converted = chat_completion_json_to_responses(
+                            fallback_payload,
+                            model_config.model_id,
+                            estimate_anthropic_input_tokens(body),
+                            retry_payload.get("tools") if isinstance(retry_payload.get("tools"), list) else None,
+                            thinking_requested(body),
+                        )
+                        recovered_output = converted.get("output") or []
+                        output_text = responses_json_output_text(recovered_output)
+                    # WHY: 工具调用必须一起回收, 否则这次重试等于白跑。
+                    recovered_calls = responses_output_tool_calls(recovered_output)
+                    for recovered_call in recovered_calls:
+                        merge_tool_call_payloads(tool_calls, recovered_call)
+                    log_info(f"codex empty stream fallback model={model_config.model_id} chars={len(output_text)} recovered_tool_calls={len(recovered_calls)}")
+                    if output_text or tool_calls:
+                        break
+                    if attempt < empty_retries:
+                        log_warn(f"codex empty turn, retrying upstream model={model_config.model_id} attempt={attempt + 2}/{empty_retries + 1}")
+                except urllib.error.HTTPError as retry_http_exc:
+                    retry_err = upstream_error_details(retry_http_exc)
+                    codex_upstream_error = codex_upstream_error or retry_err.get("message", "")
+                    codex_upstream_error_type = retry_err.get("type", "api_error")
+                    log_error(f"codex stream retry http error model={model_config.model_id} type={codex_upstream_error_type} {retry_err.get('message','')[:200]}")
+                    break
+                except Exception as exc:
+                    log_error(f"codex empty stream fallback failed model={model_config.model_id} error={exc}")
+                    break
         if not output_text and not tool_calls:
             error_msg = codex_upstream_error or "Upstream completed without assistant text or tool calls"
             error_type = codex_upstream_error_type if codex_upstream_error else "api_error"
@@ -1381,7 +1497,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
                     thinking_requested(body),
                 )
-                if payload.get("output"):
+                if responses_output_has_content(payload.get("output")):
                     # WHY: Inject reasoning placeholder for auto mode (Bug #2)
                     # if thinking_requested(body):
                     #     payload["output"] = inject_redacted_thinking_to_responses_output(payload["output"])
@@ -1389,6 +1505,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     send_json(self, 200, payload)
                     return
                 # Empty output - retry then fall back to streaming
+                # WHY: 判定用 responses_output_has_content() 而不是 `if payload.get("output")`:
+                # 只含 reasoning 的 output 也是非空列表, 用真值判断会把“空回合”当成正常
+                # 响应直接返回, 于是永远进不了重试分支。
                 for _attempt in range(2):
                     log_error(f"WARNING empty responses non-stream model={model_config.model_id} attempt={_attempt+1}/2")
                     time.sleep(0.5 * (_attempt + 1))
@@ -1406,13 +1525,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                             upstream_payload.get("tools") if isinstance(upstream_payload.get("tools"), list) else None,
                             thinking_requested(body),
                         )
-                        if payload.get("output"):
+                        if responses_output_has_content(payload.get("output")):
                             break
                     except ValueError:
                         raise
                     except Exception as retry_exc:
                         log_error(f"WARNING responses non-stream retry failed model={model_config.model_id} error={retry_exc}")
-                if payload.get("output"):
+                if responses_output_has_content(payload.get("output")):
                     log_info(f"response done model={model_config.model_id} non_stream=true{usage_summary(payload.get('usage'))}{usage_cache_debug(payload.get('usage'))}")
                     send_json(self, 200, payload)
                     return
@@ -2342,6 +2461,12 @@ def main() -> None:
     global ACTIVE_CONFIG
     ACTIVE_CONFIG = config
     register_active_config(lambda: ACTIVE_CONFIG)
+    try:
+        load_route_plugins(config)
+    except Exception as exc:
+        log_error(f"ERROR: plugin load failed: {exc}")
+        print(f"[SHTUCodeProxy] ERROR: plugin load failed: {exc}", file=sys.stderr)
+        sys.exit(1)
     server = ThreadingHTTPServer((args.host, args.port), ProxyHandler)
     server.daemon_threads = True
 

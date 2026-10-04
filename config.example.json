@@ -1,57 +1,70 @@
 {
-  "host": "127.0.0.1",
-  "port": 8091,
-  "timeout": 300,
+  "host": "0.0.0.0",
+  "port": 8090,
+  "timeout": 30000,
   "default_stream": true,
-  "auth_key": "shangshi",
-  "log_level": 2,
+  "auth_key": "",
+  "log_level": 1,
   "ssl_cert": "",
   "ssl_key": "",
-  "allowed_ips": ["127.0.0.1"],
-  "denied_ips": [],
-
+  "allowed_ips": [],
+  "denied_ips": [
+    "192.168.5.1"
+  ],
   "models": [
     {
-      "name": "glm-chat",
-      "upstream_model": "glm-chat",
+      "name": "deepseek-pro",
+      "model_id": "deepseek-pro",
       "base_url": "https://genaiapi.shanghaitech.edu.cn/api/v1/start",
-      "api_key": "PUT_YOUR_API_KEY_HERE",
+      "api_key": "YOUR_KEY",
+      "upstream_model": "deepseek-pro",
       "api_format": "chat_completions",
       "supports_image": true,
       "supports_audio": false,
       "supports_video": false,
-      "stream_bridge": false,
-      "max_context_tokens": 500000,
-      "supports_reasoning": true,
-      "enable_thinking": true
+      "max_context_tokens": "500000"
     },
     {
-      "name": "deepseek-pro",
-      "upstream_model": "deepseek-pro",
+      "name": "glm-chat",
+      "model_id": "glm-chat",
       "base_url": "https://genaiapi.shanghaitech.edu.cn/api/v1/start",
-      "api_key": "PUT_YOUR_API_KEY_HERE",
+      "api_key": "YOUR_KEY",
+      "upstream_model": "glm-chat",
       "api_format": "chat_completions",
       "supports_image": true,
       "supports_audio": false,
       "supports_video": false,
-      "stream_bridge": false,
-      "max_context_tokens": 500000,
-      "supports_reasoning": true,
-      "enable_thinking": true
+      "max_context_tokens": "500000"
+    },
+    {
+      "name": "minimax3-response",
+      "model_id": "MiniMax-M3",
+      "base_url": "https://api.minimax.cn",
+      "api_key": "YOUR_KEY",
+      "max_context_tokens": "500000"
     },
     {
       "name": "minimax3-claude",
-      "upstream_model": "MiniMax-M3",
+      "model_id": "MiniMax-M3",
       "base_url": "https://api.minimaxi.com/anthropic",
-      "api_key": "PUT_YOUR_API_KEY_HERE",
-      "max_context_tokens": 500000
-    },
+      "api_key": "YOUR_KEY",
+      "max_context_tokens": "500000"
+    }
+  ],
+  "plugin_dir": "/opt/SHTUProxy/plugins",
+  "plugins": [
     {
-      "name": "minimax3-codex",
-      "upstream_model": "MiniMax-M3",
-      "base_url": "https://api.minimax.cn",
-      "api_key": "PUT_YOUR_API_KEY_HERE",
-      "max_context_tokens": 500000
+      "module": "qwen_image.py",
+      "enabled": true,
+      "timeout": 600,
+      "options": {
+        "model_root": "/path/to/qwen-image-2.1",
+        "data_root": "/path/to/qwen-image-data",
+        "run_script": "scripts/run.sh",
+        "prompt_max": 8000,
+        "upload_max_mb": 50,
+        "offline": true
+      }
     }
   ]
 }

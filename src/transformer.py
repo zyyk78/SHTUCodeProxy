@@ -25,7 +25,7 @@ from urllib.parse import urlparse
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from logger import (
-    log, log_error, log_info,
+    log, log_error, log_info, log_warn,
     now_ms, _orjson_dumps, _orjson_dumps_str, _orjson_loads,
     _HAS_ORJSON, json_dumps_compact,
 )
@@ -1689,17 +1689,332 @@ def responses_content_to_chat_content(content: Any) -> Any:
 
 
 def responses_tool_to_chat_tool(tool: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    if tool.get("type") != "function":
+    """单个 Responses 工具 -> chat function 工具；无法无损转换时返回 None。
+
+    WHY 只处理 function / custom 两类：
+    - "function": 上游原生支持, 原样透传
+    - "custom" (apply_patch 等 freeform 工具): chat 上游没有 freeform,
+      降级成"单个 input 字符串参数"的 function
+    namespace 工具必须由 responses_tools_to_chat_tools() 展开后再进来。
+    """
+    if not isinstance(tool, dict):
         return None
-    if isinstance(tool.get("function"), dict):
-        function = dict(tool["function"])
-    else:
+    tool_type = tool.get("type")
+    if tool_type == "function":
+        if isinstance(tool.get("function"), dict):
+            function = dict(tool["function"])
+        else:
+            function = {
+                "name": tool.get("name") or "tool",
+                "description": tool.get("description", ""),
+                "parameters": tool.get("parameters") or {},
+            }
+        # WHY: strict / output_schema / defer_loading 是 Responses 专有字段,
+        # 非 OpenAI 上游会因为不认识的参数报 400, 直接剥掉.
+        function.pop("strict", None)
+        function.pop("output_schema", None)
+        function.pop("defer_loading", None)
+        return copy_cache_metadata(tool, {"type": "function", "function": function})
+    if tool_type in ("custom", "freeform"):
+        name = tool.get("name") or "tool"
+        description = str(tool.get("description") or "")
         function = {
-            "name": tool.get("name") or "tool",
-            "description": tool.get("description", ""),
-            "parameters": tool.get("parameters") or {},
+            "name": name,
+            "description": f"{description}\n\nPut the raw tool input (patch text, grammar output, ...) in the `input` field.".strip(),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "input": {
+                        "type": "string",
+                        "description": "Raw tool input exactly as required by the tool description above.",
+                    }
+                },
+                "required": ["input"],
+            },
         }
-    return copy_cache_metadata(tool, {"type": "function", "function": function})
+        return {"type": "function", "function": function}
+    return None
+
+
+def responses_namespace_flat_name(namespace: Any, name: Any) -> str:
+    """codex 的 namespace 成员扁平命名规则。
+
+    WHY 必须与 codex 保持一致, 否则模型调用回来的名字无法路由:
+    codex-rs core/src/tools/handlers/mcp.rs 用
+    format!("{namespace.rstrip('_')}__{name.lstrip('_')}")
+    例如 multi_agent_v1 + spawn_agent -> multi_agent_v1__spawn_agent
+    """
+    namespace_text = str(namespace or "").strip().rstrip("_")
+    tool_text = str(name or "").strip().lstrip("_")
+    if not namespace_text:
+        return tool_text or "tool"
+    if not tool_text:
+        return namespace_text
+    if tool_text.startswith(f"{namespace_text}__"):
+        return tool_text
+    return f"{namespace_text}__{tool_text}"
+
+
+def responses_tool_route_map(tools: Any) -> Dict[str, Tuple[str, str, bool]]:
+    """原始 responses tools -> {扁平名: (namespace, 成员名, 是否 freeform/custom)}。
+
+    WHY 需要这张反向表: codex 收到工具调用 item 后, 用
+    ``ToolName::new(namespace, name)`` 去查 handler 注册表
+    (codex-rs/core/src/tools/router.rs::build_tool_call),
+    而 namespace 是 item 的**独立 JSON 字段**, 不从 name 拆。
+    我们上行把 namespace 拍平成了 ``multi_agent_v1__spawn_agent``,
+    若原样塞回 name, codex 会当成 plain 名字查表 -> "unsupported call"。
+
+    WHY 不能盲拆 "__": ``mcp__github`` + ``get_me`` 拍平成
+    ``mcp__github__get_me``, 拆成 ``mcp`` + ``github__get_me`` 看起来
+    也合法, 拆错就会路由到不存在的 namespace。唯一可靠依据就是本次
+    请求原始 tools 里的 namespace 表。
+
+    第三个分量 is_custom 记录该工具原本是 ``type: custom/freeform``
+    (apply_patch 这类)。chat 上游没有 freeform, 我们只能降级成
+    "单 input 字符串参数"的 function; 但 codex 的 apply_patch handler
+    硬性要求 ``ToolPayload::Custom``, 收到 Function payload 直接报
+    "apply_patch handler received unsupported payload"
+    (core/src/tools/handlers/apply_patch.rs), 所以回程必须还原成
+    ``custom_tool_call`` item。
+    """
+    mapping: Dict[str, Tuple[str, str, bool]] = {}
+    if not isinstance(tools, list):
+        return mapping
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        tool_type = str(tool.get("type") or "")
+        is_namespace = tool_type == "namespace"
+        if not is_namespace and tool_type not in ("function", "custom", "freeform"):
+            continue
+        namespace = str(tool.get("name") or "").strip() if is_namespace else ""
+        members = tool.get("tools") if is_namespace else [tool]
+        if not isinstance(members, list):
+            continue
+        for member in members:
+            if not isinstance(member, dict):
+                continue
+            bare = str(member.get("name") or "").strip()
+            if not bare:
+                continue
+            member_type = str(member.get("type") or "function")
+            flat = responses_namespace_flat_name(namespace, bare) if namespace else bare
+            # 重名时保持先出现的那个, 与上行 responses_tools_to_chat_tools()
+            # 的 seen_names 去重顺序保持一致。
+            mapping.setdefault(flat, (namespace, bare, member_type in ("custom", "freeform")))
+    return mapping
+
+
+# 进程级工具路由注册表: 上行展开时写入, 下行解码时读取。
+# WHY 用注册表而不是逐个调用点传参: 发射工具调用 item 的地方有 3 处
+# (transformer 的 chat->responses、proxy 的流式发射、proxy 的 stream_bridge),
+# 而这张表来自**本次请求的 body**, 漏传一处就退化成 "unsupported call"
+# 这种静默失败。注册表由同一次请求的上行转换填充, 读取永远发生在填充之后,
+# 且键空间有界(客户端工具清单大小)。
+_CODEX_TOOL_ROUTE_REGISTRY: Dict[str, Tuple[str, str, bool]] = {}
+
+
+def register_responses_tool_routes(tools: Any) -> Dict[str, Tuple[str, str, bool]]:
+    """把本次请求的工具路由表并入进程级注册表, 返回解析出的映射。"""
+    mapping = responses_tool_route_map(tools)
+    if mapping:
+        _CODEX_TOOL_ROUTE_REGISTRY.update(mapping)
+    return mapping
+
+
+def reset_codex_tool_route_registry() -> None:
+    """仅供测试使用。"""
+    _CODEX_TOOL_ROUTE_REGISTRY.clear()
+
+
+def codex_tool_call_target(
+    flat_name: Any,
+    route_registry: Optional[Dict[str, Tuple[str, str, bool]]] = None,
+) -> Tuple[str, Optional[str], bool]:
+    """拍平名 -> (回给 codex 的 name, namespace, 是否 freeform/custom)。
+
+    非 namespace / 非 custom 工具返回 (name, None, False), 调用方据此
+    保持普通 ``function_call`` 且不输出 ``namespace`` 字段。
+    """
+    name = str(flat_name or "").strip()
+    registry = _CODEX_TOOL_ROUTE_REGISTRY if route_registry is None else route_registry
+    hit = registry.get(name)
+    if hit:
+        namespace, bare, is_custom = hit
+        return bare, namespace or None, is_custom
+    return name, None, False
+
+
+def responses_output_tool_calls(output: Any) -> List[Dict[str, Any]]:
+    """Responses ``output`` 数组 -> 内部扁平 tool_call 列表（空回合重试用）。
+
+    WHY 重试时需要它: ``chat_completion_json_to_responses()`` 已经把拍平名解回了
+    (name, namespace), 而下游 ``codex_function_call_item()`` 靠**拍平名**查进程级
+    路由表来还原 namespace。这里把扁平原样拼回去, 就能直接喂给
+    ``merge_tool_call_payloads()`` 复用同一条发射路径, 不会把 namespace 弄丢。
+
+    返回形与 ``merge_tool_call()`` 对齐: ``{id, name, arguments, index,
+    replace_arguments}``。``index`` 必须递增, 否则多个工具调用会互相覆盖。
+    """
+    calls: List[Dict[str, Any]] = []
+    if not isinstance(output, list):
+        return calls
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if item_type not in ("function_call", "custom_tool_call"):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        flat_name = responses_namespace_flat_name(item.get("namespace"), name)
+        if item_type == "custom_tool_call":
+            arguments = json_dumps_compact({"input": item.get("input") or ""})
+        else:
+            raw = item.get("arguments")
+            arguments = raw if isinstance(raw, str) else json_dumps_compact(raw or {})
+        calls.append({
+            "id": item.get("call_id") or item.get("id") or f"call_retry_{now_ms()}_{len(calls)}",
+            "name": flat_name,
+            "arguments": arguments,
+            "index": len(calls),
+            "replace_arguments": True,
+        })
+    return calls
+
+
+def responses_output_has_content(output: Any) -> bool:
+    """判断一个 Responses ``output`` 是否是“空回合”。
+
+    空回合 = 只有 reasoning 等不可见内容, 既没有 ``message`` 也没有工具调用。
+    客户端收到这种回合会认为本轮已结束, 界面上表现为“模型说要做什么但工具没执行”。
+    """
+    if not isinstance(output, list):
+        return False
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") in ("message", "function_call", "custom_tool_call"):
+            if item.get("type") != "message":
+                return True
+            for part in (item.get("content") or []):
+                if isinstance(part, dict) and str(part.get("text") or "").strip():
+                    return True
+    return False
+
+
+def _custom_tool_input_text(arguments: Dict[str, Any]) -> str:
+    """从降级 function 的 arguments 里取回 freeform 原文。"""
+    for key in ("input", "patch", "arguments", "text", "content"):
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return json_dumps_compact(arguments)
+
+
+def _namespace_member_to_chat_tool(namespace: Dict[str, Any], member: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    namespace_name = namespace.get("name")
+    member_type = member.get("type")
+    flat_name = responses_namespace_flat_name(namespace_name, member.get("name"))
+    if member_type == "function":
+        source = {
+            "type": "function",
+            "name": flat_name,
+            "description": member.get("description", ""),
+            "parameters": member.get("parameters") or {},
+        }
+    elif member_type in ("custom", "freeform"):
+        source = {
+            "type": "custom",
+            "name": flat_name,
+            "description": member.get("description", ""),
+        }
+    else:
+        return None
+    namespace_description = str(namespace.get("description") or "").strip()
+    if namespace_description and namespace_description not in str(source.get("description") or ""):
+        source["description"] = f"[{namespace_name}] {namespace_description}\n{source.get('description') or ''}".strip()
+    return responses_tool_to_chat_tool(source)
+
+
+def responses_tools_to_chat_tools(tools: Any) -> List[Dict[str, Any]]:
+    """Responses tools 数组 -> chat function tools 数组（展开 namespace）。
+
+    WHY: codex-rs (rust-v0.159) 把 MCP 工具和 multi-agent 工具序列化成
+    {"type":"namespace","name":...,"tools":[{"type":"function",...}]}，
+    旧的实现只保留 type=="function"，导致上游只看到 11 个内置工具，
+    MCP / multi-agent / web 能力静默消失。这里改为展开。
+
+    未知类型一律"丢弃 + 告警日志"，绝不硬转:
+    - 上游不认识的 tool schema 会直接 400, 整个请求失败;
+    - 静默丢弃就是这次线上事故的根因。
+    """
+    if not isinstance(tools, list):
+        return []
+    # 填充进程级工具路由注册表, 供回程把拍平名解回 (namespace, 成员名, 是否 freeform)。
+    register_responses_tool_routes(tools)
+    converted: List[Dict[str, Any]] = []
+    seen_names: set = set()
+    dropped: List[str] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        tool_type = str(tool.get("type") or "unknown")
+        if tool_type == "namespace":
+            members = tool.get("tools")
+            if not isinstance(members, list) or not members:
+                dropped.append(f"{tool.get('name') or '<unnamed-namespace>'}(empty)")
+                continue
+            for member in members:
+                chat_tool = _namespace_member_to_chat_tool(tool, member) if isinstance(member, dict) else None
+                if not chat_tool:
+                    dropped.append(f"{tool.get('name') or '<unnamed-namespace>'}.{responses_namespace_flat_name(None, (member or {}).get('name')) if isinstance(member, dict) else '?'}")
+                    continue
+                name = chat_tool["function"].get("name")
+                if name in seen_names:
+                    dropped.append(f"{name}(duplicate)")
+                    continue
+                seen_names.add(name)
+                converted.append(chat_tool)
+            continue
+        chat_tool = responses_tool_to_chat_tool(tool)
+        if not chat_tool:
+            dropped.append(f"{tool.get('name') or '<unnamed>'}:{tool_type}")
+            continue
+        name = chat_tool["function"].get("name")
+        if name in seen_names:
+            dropped.append(f"{name}(duplicate)")
+            continue
+        seen_names.add(name)
+        converted.append(chat_tool)
+    if dropped:
+        _log_dropped_tools(dropped)
+    return converted
+
+
+_DROPPED_TOOLS_LOG_STATE: Dict[str, Tuple[float, int]] = {}
+
+
+def _log_dropped_tools(dropped: List[str]) -> None:
+    """按"丢弃集合签名"限流告警, 避免每轮请求刷屏。"""
+    signature = "|".join(sorted(dropped))
+    now = time.time()
+    last_at, last_count = _DROPPED_TOOLS_LOG_STATE.get(signature, (0.0, -1))
+    if len(dropped) == last_count and now - last_at < 60.0:
+        return
+    _DROPPED_TOOLS_LOG_STATE[signature] = (now, len(dropped))
+    if len(_DROPPED_TOOLS_LOG_STATE) > 64:
+        for key in [k for k, (ts, _) in _DROPPED_TOOLS_LOG_STATE.items() if now - ts > 300]:
+            _DROPPED_TOOLS_LOG_STATE.pop(key, None)
+    preview = ", ".join(dropped[:20])
+    if len(dropped) > 20:
+        preview += f", ... (+{len(dropped) - 20})"
+    log_warn(
+        f"responses tools dropped {len(dropped)} (upstream chat_completions cannot express them): {preview}. "
+        "Convert them in responses_tools_to_chat_tools() if the model should keep this ability."
+    )
 
 
 def responses_tool_choice_to_chat(tool_choice: Any) -> Any:
@@ -1861,6 +2176,12 @@ def responses_request_to_chat_completions(
             # WHY: Normalize before content_to_chat_content(), otherwise a legacy
             # reasoning item would already be flattened into message text.
             item_content = normalize_thinking_text_block_in_message_content(item.get("content"))
+            item_author = item.get("author")
+            item_recipient = item.get("recipient")
+            item_payload_text = responses_content_to_text(item_content)
+            if item_author is not None and item_recipient is not None:
+                envelope = {"author": item_author, "recipient": item_recipient, "payload": item_payload_text}
+                item_content = _orjson_dumps_str(envelope)
             message = {"role": message_role, "content": responses_content_to_chat_content(item_content)}
             if message["role"] == "system":
                 if not has_cache_metadata(item.get("content")):
@@ -1947,7 +2268,7 @@ def responses_request_to_chat_completions(
         payload["temperature"] = body["temperature"]
     if isinstance(body.get("top_p"), (int, float)):
         payload["top_p"] = body["top_p"]
-    tools = [tool for tool in (responses_tool_to_chat_tool(item) for item in body.get("tools", [])) if tool]
+    tools = responses_tools_to_chat_tools(body.get("tools"))
     if tools:
         payload["tools"] = tools
     # WHY: Only set tool_choice when tools are present. Upstream APIs
@@ -2119,6 +2440,29 @@ def chat_tool_call_payloads(tool_calls: Any, is_delta: bool) -> List[Dict[str, A
     return payloads
 
 
+def chat_message_tool_call_payloads(message: Any) -> List[Dict[str, Any]]:
+    """chat completion 的 message -> 内部 tool_call payload 列表。
+
+    WHY 不能只读 ``message["tool_calls"]``: 旧版 OpenAI 格式把工具调用放在
+    ``message["function_call"]`` (单数), 只认复数会把它们**静默丢弃**。
+    """
+    if not isinstance(message, dict):
+        return []
+    payloads = chat_tool_call_payloads(message.get("tool_calls"), False)
+    if payloads:
+        return payloads
+    legacy = message.get("function_call")
+    if isinstance(legacy, dict) and (legacy.get("name") or legacy.get("arguments")):
+        return [{
+            "id": legacy.get("id") or f"toolu_legacy_{now_ms()}",
+            "index": 0,
+            "name": legacy.get("name") or "",
+            "arguments": legacy.get("arguments") if legacy.get("arguments") is not None else "",
+            "replace_arguments": True,
+        }]
+    return []
+
+
 def tool_call_kind_from_payloads(payloads: List[Dict[str, Any]], is_delta: bool) -> Tuple[str, Optional[Dict[str, Any]]]:
     if not payloads:
         return "ignore", None
@@ -2205,6 +2549,19 @@ def extract_text_delta(event: Optional[str], data: str) -> Tuple[str, Optional[D
         tool_calls = delta.get("tool_calls") if is_delta else message.get("tool_calls")
         if isinstance(tool_calls, list) and tool_calls:
             return tool_call_kind_from_payloads(chat_tool_call_payloads(tool_calls, is_delta), is_delta)
+        # WHY: 旧版 OpenAI 格式 `function_call` (单数) 必须在 tool_calls 之后立即处理。
+        # 之前只认复数 `tool_calls`, 于是这类 delta 既不命中 tool_calls 也不命中
+        # reasoning/text, 最后落到 `return "ignore"` —— **工具调用被静默丢弃**,
+        # 代理日志里表现为 `tools=0`, 客户端表现为“模型说要调工具但没调”。
+        legacy = (delta.get("function_call") if delta else None) or message.get("function_call")
+        if isinstance(legacy, dict) and (legacy.get("name") or legacy.get("arguments")):
+            return "tool_call_delta" if is_delta else "tool_call", {
+                "id": legacy.get("id") or f"toolu_legacy_{now_ms()}",
+                "index": 0,
+                "name": legacy.get("name") or "",
+                "arguments": legacy.get("arguments") if legacy.get("arguments") is not None else "",
+                "replace_arguments": not is_delta,
+            }
         # WHY: Some models (e.g. GLM, DeepSeek Pro) send reasoning content in
         # delta.reasoning_content or delta.reasoning instead of delta.content.
         # Return as separate "reasoning" kind so it can be emitted as an
@@ -2271,7 +2628,12 @@ def tool_arguments_json(arguments: Any) -> str:
     return json_dumps_compact(parse_tool_arguments(arguments))
 
 
-def codex_function_call_item(tool_call: Dict[str, Any], offset: int = 0, normalize_shell_aliases: bool = True) -> Dict[str, Any]:
+def codex_function_call_item(
+    tool_call: Dict[str, Any],
+    offset: int = 0,
+    normalize_shell_aliases: bool = True,
+    route_registry: Optional[Dict[str, Tuple[str, str, bool]]] = None,
+) -> Dict[str, Any]:
     name = str(tool_call.get("name") or "tool")
     arguments = parse_tool_arguments(tool_call.get("arguments", ""))
     normalized_name = name
@@ -2291,14 +2653,37 @@ def codex_function_call_item(tool_call: Dict[str, Any], offset: int = 0, normali
             fallback = arguments.get("arguments")
             if isinstance(fallback, str) and fallback.strip():
                 arguments["command"] = shell_command_argv(fallback)
-    return {
+    # WHY 把拍平名解回 (namespace, 成员名): codex 用工具调用 item 的
+    # namespace 字段 + name 字段查 handler 表, name 里塞
+    # "multi_agent_v1__spawn_agent" 会被当成 plain 名字 ->
+    # "unsupported call: multi_agent_v1__spawn_agent"。
+    routed_name, namespace, is_custom = codex_tool_call_target(normalized_name, route_registry)
+    call_id = tool_call.get("id") or f"call_proxy_{now_ms()}_{offset}"
+    if is_custom:
+        # freeform/custom 工具 (apply_patch 等): 必须发 custom_tool_call,
+        # 否则 codex 的 handler 收到 ToolPayload::Function 直接拒绝。
+        item = {
+            "id": tool_call.get("id") or f"fc_proxy_{now_ms()}_{offset}",
+            "type": "custom_tool_call",
+            "status": "completed",
+            "call_id": call_id,
+            "name": routed_name,
+            "input": _custom_tool_input_text(arguments),
+        }
+        if namespace:
+            item["namespace"] = namespace
+        return item
+    item = {
         "id": tool_call.get("id") or f"fc_proxy_{now_ms()}_{offset}",
         "type": "function_call",
         "status": "completed",
-        "call_id": tool_call.get("id") or f"call_proxy_{now_ms()}_{offset}",
-        "name": normalized_name,
+        "call_id": call_id,
+        "name": routed_name,
         "arguments": json_dumps_compact(arguments),
     }
+    if namespace:
+        item["namespace"] = namespace
+    return item
 
 
 def filter_thinking_text_delta(text: str, state: Dict[str, Any]) -> str:
@@ -2602,7 +2987,7 @@ def chat_completion_json_to_responses(
         output.append({"id": response_output_item_id(), "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": "🤔 Thinking\n````\n" + reasoning_text + "\n````"}]})
     elif output_text:
         output.append({"id": response_output_item_id(), "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": output_text}]})
-    parsed_tool_calls = chat_tool_call_payloads(message.get("tool_calls"), False) + pseudo_tool_calls
+    parsed_tool_calls = chat_message_tool_call_payloads(message) + pseudo_tool_calls
     for offset, tool_call in enumerate(parsed_tool_calls):
         output.append(codex_function_call_item(normalize_tool_call_name_for_tools(tool_call, tools), offset, normalize_shell_aliases=False))
     response_payload = responses_completed_payload(response_id(), model, output, input_tokens, output_text)

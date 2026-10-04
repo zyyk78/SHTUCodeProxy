@@ -2,6 +2,7 @@
 from transformer import (
     _codex_emit_recovered_response,
     chat_completion_json_to_responses,
+    responses_request_to_chat_completions,
 )
 
 
@@ -128,6 +129,27 @@ def test_recovered_fragmented_messages_are_merged_into_one_item():
     assert message_added[0]["content"][0]["text"] == "part one part two"
     completed_output = events[-1][1]["response"]["output"]
     assert [item["type"] for item in completed_output] == ["reasoning", "message", "function_call"]
+
+
+def test_agent_message_history_preserves_author_recipient_and_payload():
+    converted = responses_request_to_chat_completions(
+        {
+            "input": [
+                {
+                    "type": "agent_message",
+                    "author": "/root/test_sub",
+                    "recipient": "/root",
+                    "content": [{"type": "input_text", "text": "DONE"}],
+                }
+            ]
+        },
+        "glm-chat",
+        "glm-chat",
+        False,
+    )
+    assert converted["messages"][0]["content"] == (
+        '{"author": "/root/test_sub", "recipient": "/root", "payload": "DONE"}'
+    )
 
 
 if __name__ == "__main__":

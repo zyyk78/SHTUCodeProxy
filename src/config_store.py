@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import sys
@@ -19,6 +20,7 @@ DEFAULT_CHAT_COMPLETIONS_URL = "https://genaiapi.shanghaitech.edu.cn/api/v1/star
 DEFAULT_UPSTREAM_URL = DEFAULT_RESPONSES_URL
 DEFAULT_API_FORMAT = "responses"
 DEFAULT_MODEL_ID = "GPT-5.5"
+DEFAULT_PLUGIN_DIR = "plugins"
 
 
 class ConfigError(Exception):
@@ -78,6 +80,21 @@ def strip_model_date_suffix(model_id: str) -> str:
     return model_id
 
 
+def _int_from_config(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return default
+    return default
+
+
 def bool_from_config(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
@@ -107,6 +124,10 @@ class ModelConfig:
     max_context_tokens: int = 0  # 0 means unknown/use global default
     supports_reasoning: bool = False
     enable_thinking: bool = False  # Send chat_template_kwargs: {enable_thinking: true} to upstream for vLLM models
+    # WHY: 部分模型 (实测 glm-chat) 在多步工具调用链的收尾步会概率性返回
+    # “只有 reasoning, 既无 output_text 也无 function_call”的空回合, 客户端
+    # 表现为“模型说要做什么但工具没执行 / 输出中断”。0 = 不重试 (旧行为)。
+    empty_turn_retries: int = 1
 
     def __post_init__(self):
         # WHY: enable_thinking implies the model returns reasoning_content,
@@ -143,6 +164,7 @@ class ModelConfig:
             max_context_tokens=int(data.get("max_context_tokens") or data.get("max_tokens") or default_max_context_tokens(model_id, upstream_model)),
             supports_reasoning=bool_from_config(data.get("supports_reasoning"), default_supports_reasoning(model_id, upstream_model)),
             enable_thinking=bool_from_config(data.get("enable_thinking"), "deepseek" in f"{model_id} {upstream_model}".lower() or "glm" in f"{model_id} {upstream_model}".lower()),
+            empty_turn_retries=max(0, _int_from_config(data.get("empty_turn_retries"), 1)),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -159,6 +181,54 @@ class ModelConfig:
             "max_context_tokens": self.max_context_tokens,
             "supports_reasoning": self.supports_reasoning,
             "enable_thinking": self.enable_thinking,
+            "empty_turn_retries": self.empty_turn_retries,
+        }
+
+
+@dataclass
+class PluginConfig:
+    """External HTTP route plugin loaded from a Python module.
+
+    `module` must expose `routes()` returning a list of RoutePlugin objects.
+    A route plugin may be a class with:
+      - `method`: "GET", "POST", or list/tuple
+      - `paths`: a path or list of paths
+      - `handle(handler, config, plugin)`: return True when handled.
+
+    A plugin module may additionally expose `configure(options: dict) -> None`,
+    called once at load time so deployment-specific values (paths, limits) live
+    in config.json instead of being hardcoded in the plugin source.
+    """
+    enabled: bool = True
+    module: str = ""
+    name: str = ""
+    timeout: int = 600
+    options: Optional[Dict[str, Any]] = None
+
+    def __post_init__(self) -> None:
+        if self.options is None:
+            self.options = {}
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "PluginConfig":
+        raw_options = data.get("options")
+        if raw_options is None:
+            raw_options = data.get("settings")
+        return cls(
+            enabled=bool(data.get("enabled", True)),
+            module=str(data.get("module") or data.get("path") or "").strip(),
+            name=str(data.get("name") or "").strip(),
+            timeout=int(data.get("timeout") or 600),
+            options=dict(raw_options) if isinstance(raw_options, dict) else {},
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "module": self.module,
+            **({"name": self.name} if self.name else {}),
+            "timeout": self.timeout,
+            **({"options": self.options} if self.options else {}),
         }
 
 
@@ -218,6 +288,8 @@ class AppConfig:
     ssl_key: str
     allowed_ips: List[str]
     denied_ips: List[str]
+    plugin_dir: str
+    plugins: List[Any]
     models: List[ModelConfig]
 
     @classmethod
@@ -250,6 +322,8 @@ class AppConfig:
             ssl_key="",
             allowed_ips=[],
             denied_ips=[],
+            plugin_dir=DEFAULT_PLUGIN_DIR,
+            plugins=[],
             models=[
                 ModelConfig(
                     name=DEFAULT_MODEL_ID,
@@ -291,6 +365,7 @@ class AppConfig:
             key: str(raw_model_env.get(key) or "").strip()
             for key in MODEL_ENV_KEYS
         }
+        plugins = [PluginConfig.from_dict(item) for item in data.get("plugins", []) if isinstance(item, dict)]
         result = cls(
             host=str(data.get("host") or default.host).strip(),
             port=int(data.get("port") or default.port),
@@ -322,6 +397,8 @@ class AppConfig:
             ssl_key=str(data.get("ssl_key") or "").strip(),
             allowed_ips=[str(ip).strip() for ip in data.get("allowed_ips", []) if str(ip).strip()],
             denied_ips=[str(ip).strip() for ip in data.get("denied_ips", []) if str(ip).strip()],
+            plugin_dir=str(data.get("plugin_dir") or default.plugin_dir).strip() or DEFAULT_PLUGIN_DIR,
+            plugins=plugins,
             models=models or default.models,
         )
         result._loaded_at = time.time()
@@ -356,6 +433,8 @@ class AppConfig:
             "ssl_key": self.ssl_key,
             "allowed_ips": self.allowed_ips,
             "denied_ips": self.denied_ips,
+            "plugin_dir": self.plugin_dir,
+            "plugins": [plugin.to_dict() for plugin in self.plugins if hasattr(plugin, "to_dict")],
             "models": [model.to_dict() for model in self.models],
         }
 

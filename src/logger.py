@@ -221,6 +221,18 @@ def log_info(message: str) -> None:
     _write_log(line)
 
 
+def log_warn(message: str) -> None:
+    """仅 log_level>=1 时输出 (警告级别)。
+
+    WHY: 工具被丢弃这类"可降级但不致命"的问题必须可见，
+    否则用户只会看到"模型突然不会用某个工具"而无从排查。
+    """
+    if _get_log_level() < 1:
+        return
+    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] WARN {message}"
+    _write_log(line)
+
+
 def log_debug(message: str) -> None:
     """仅 log_level>=3 时输出 (详细日志)。"""
     if _get_log_level() < 3:
