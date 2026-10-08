@@ -1,7 +1,7 @@
 # ComfyUI Workflow 接口使用说明
 
 > 适用范围：SHTUCodeProxy 的 ComfyUI Workflow 插件（`src/plugins/comfy_workflow.py`）。
-> 后端：ComfyUI 0.38.0（`/opt/comfy/ComfyUI`，监听 `127.0.0.1:8188`，双卡 RTX 4090）。
+> 后端：ComfyUI 0.38.0（部署在服务器本地，仅监听 `127.0.0.1:8188`，由 SHTUCodeProxy 插件对外转发）。
 > 本文所有示例的 `BASE` / `AUTH` 替换成你的实际值。
 >
 > **agent 工作流（surface-first）**：
@@ -21,7 +21,7 @@
 ### 0.1 连接信息
 
 ```bash
-BASE=http://127.0.0.1:8095           # SHTUCodeProxy 地址（HTTPS 实例用 https:// + -k）
+BASE=http://SERVER_IP:8095           # SHTUCodeProxy 地址：SERVER_IP 换成服务器实际 IP（HTTPS 实例用 https:// + -k）
 KEY='你的auth_key'                    # config.json 里的 auth_key
 AUTH="Authorization: Bearer $KEY"
 ```
@@ -375,7 +375,7 @@ curl -sk -X DELETE -H "$AUTH" "$BASE/comfy/workflow/jobs/$JOB"
 ## 7. 完整示例（一段跑通文生图）
 
 ```bash
-BASE=https://127.0.0.1:8091
+BASE=https://SERVER_IP:8091          # SERVER_IP 换成服务器实际 IP
 KEY='你的auth_key'
 AUTH="Authorization: Bearer $KEY"
 
