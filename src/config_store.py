@@ -15,6 +15,9 @@ from safe_io import atomic_write_text
 APP_NAME = "SHTUClaudeProxy"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8082
+# WHY: 单个请求体上限。内嵌图片 (base64 data URL) 很容易超过 10 MB,
+# 历史上写死 10 MB 会直接 413。默认放宽到 30 MB。
+DEFAULT_MAX_REQUEST_BODY_BYTES = 30 * 1024 * 1024  # 30 MB
 DEFAULT_RESPONSES_URL = "https://genaiapi.shanghaitech.edu.cn/api/v1/response"
 DEFAULT_CHAT_COMPLETIONS_URL = "https://genaiapi.shanghaitech.edu.cn/api/v1/start"
 DEFAULT_UPSTREAM_URL = DEFAULT_RESPONSES_URL
@@ -271,6 +274,7 @@ class AppConfig:
     codex_reasoning_effort: str
     model_env: Dict[str, str]
     timeout: int
+    max_request_body_bytes: int
     claude_path: str
     claude_settings_path: str
     codex_config_path: str
@@ -305,6 +309,7 @@ class AppConfig:
             codex_reasoning_effort=DEFAULT_CODEX_REASONING_EFFORT,
             model_env={key: "" for key in MODEL_ENV_KEYS},
             timeout=300,
+            max_request_body_bytes=DEFAULT_MAX_REQUEST_BODY_BYTES,
             claude_path=default_claude_path(),
             claude_settings_path=default_claude_settings_path(),
             codex_config_path=default_codex_config_path(),
@@ -377,6 +382,10 @@ class AppConfig:
             codex_reasoning_effort=codex_reasoning_effort,
             model_env=model_env,
             timeout=int(data.get("timeout") or default.timeout),
+            # 下限 1 KB: 配置写错 (0 / 负数 / 垃圾字符串) 不应该把所有请求都打回 413
+            max_request_body_bytes=max(1024, _int_from_config(
+                data.get("max_request_body_bytes"), default.max_request_body_bytes
+            )),
             claude_path=portable_claude_path(str(data.get("claude_path") or default.claude_path)),
             claude_settings_path=portable_settings_path(str(data.get("claude_settings_path") or default.claude_settings_path)),
             codex_config_path=portable_codex_config_path(str(data.get("codex_config_path") or default.codex_config_path)),
@@ -416,6 +425,7 @@ class AppConfig:
             "codex_reasoning_effort": self.codex_reasoning_effort,
             "model_env": self.model_env,
             "timeout": self.timeout,
+            "max_request_body_bytes": self.max_request_body_bytes,
             "claude_path": self.claude_path,
             "claude_settings_path": self.claude_settings_path,
             "codex_config_path": self.codex_config_path,

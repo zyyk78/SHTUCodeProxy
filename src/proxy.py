@@ -151,12 +151,22 @@ def current_config() -> AppConfig:
     return ACTIVE_CONFIG
 
 
-_MAX_BODY_LENGTH = 10 * 1024 * 1024  # 10 MB
+def max_body_length() -> int:
+    """当前生效的请求体上限 (字节)。
+
+    WHY: 以前是模块级常量 10 MB, 内嵌图片 (base64 data URL) 一多就 413。
+    现在走配置项 max_request_body_bytes, default 30 MB, 热改 config.json 即可生效。
+    """
+    try:
+        return max(1024, int(current_config().max_request_body_bytes))
+    except Exception:
+        return 30 * 1024 * 1024
 
 def read_json_body(handler: BaseHTTPRequestHandler) -> Dict[str, Any]:
+    limit = max_body_length()
     length = int(handler.headers.get("content-length", "0") or "0")
-    if length > _MAX_BODY_LENGTH:
-        send_json(handler, 413, {"type": "error", "error": {"type": "invalid_request_error", "message": f"Request body too large: {length} bytes (max {_MAX_BODY_LENGTH})"}})
+    if length > limit:
+        send_json(handler, 413, {"type": "error", "error": {"type": "invalid_request_error", "message": f"Request body too large: {length} bytes (max {limit})"}})
         raise _BodyTooLargeError()
     if length > 0:
         raw = handler.rfile.read(length)
@@ -170,8 +180,8 @@ def read_json_body(handler: BaseHTTPRequestHandler) -> Dict[str, Any]:
                 if not chunk:
                     break
                 chunks.append(chunk)
-                if sum(len(c) for c in chunks) > _MAX_BODY_LENGTH:
-                    send_json(handler, 413, {"type": "error", "error": {"type": "invalid_request_error", "message": f"Request body too large (max {_MAX_BODY_LENGTH})"}})
+                if sum(len(c) for c in chunks) > limit:
+                    send_json(handler, 413, {"type": "error", "error": {"type": "invalid_request_error", "message": f"Request body too large (max {limit})"}})
                     raise _BodyTooLargeError()
         except (socket.timeout, OSError):
             pass
@@ -433,6 +443,25 @@ class ProxyHandler(BaseHTTPRequestHandler):
         if not self.check_ip():
             return
         path = self.route_path()
+
+        # WHY: auth_exempt 插件健康检查必须先于内置健康路径和鉴权执行，
+        # 否则声明为 auth_exempt=True 的路由会被 401 挡住。
+        for plugin in route_plugins():
+            if not plugin.handles("GET", path):
+                continue
+            if getattr(plugin, "auth_exempt", False):
+                try:
+                    if plugin.handle(self, current_config(), plugin):
+                        return
+                except Exception as exc:
+                    log_error(f"plugin GET error plugin={type(plugin).__name__} path={path} error={exc}")
+                    try:
+                        send_json(self, 500, {"type": "error", "error": {"type": "plugin_error", "message": str(exc)}})
+                    except Exception:
+                        pass
+                    return
+                break
+
         if path in self._HEALTH_PATHS:
             send_json(self, 200, {"ok": True, "service": "shtu-claude-proxy"})
             return
@@ -1036,10 +1065,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                 _emit("response.output_text.done", {"item_id": item.get("id"), "output_index": output_index, "content_index": content_index, "text": part.get("text", "")})
                             _emit("response.content_part.done", {"item_id": item.get("id"), "output_index": output_index, "content_index": content_index, "part": part})
                         _emit("response.output_item.done", {"output_index": output_index, "item": item})
-                    elif item.get("type") == "function_call":
+                    elif item.get("type") in ("function_call", "custom_tool_call"):
                         _emit("response.output_item.added", {"output_index": output_index, "item": dict(item, status="in_progress")})
-                        _emit("response.function_call_arguments.delta", {"item_id": item.get("id"), "output_index": output_index, "delta": item.get("arguments", "{}")})
-                        _emit("response.function_call_arguments.done", {"item_id": item.get("id"), "output_index": output_index, "arguments": item.get("arguments", "{}")})
+                        if item.get("type") == "custom_tool_call":
+                            _emit("response.custom_tool_call_input.delta", {"item_id": item.get("id"), "output_index": output_index, "delta": item.get("input", "")})
+                            _emit("response.custom_tool_call_input.done", {"item_id": item.get("id"), "output_index": output_index, "input": item.get("input", "")})
+                        else:
+                            _emit("response.function_call_arguments.delta", {"item_id": item.get("id"), "output_index": output_index, "delta": item.get("arguments", "{}")})
+                            _emit("response.function_call_arguments.done", {"item_id": item.get("id"), "output_index": output_index, "arguments": item.get("arguments", "{}")})
                         _emit("response.output_item.done", {"output_index": output_index, "item": item})
                 _emit("response.completed", {"response": compact_response})
                 write_data_sse(self, "[DONE]")
@@ -1154,10 +1187,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
                                 emit("response.output_text.done", {"item_id": item.get("id"), "output_index": output_index, "content_index": content_index, "text": part.get("text", "")})
                             emit("response.content_part.done", {"item_id": item.get("id"), "output_index": output_index, "content_index": content_index, "part": part})
                         emit("response.output_item.done", {"output_index": output_index, "item": item})
-                    elif item.get("type") == "function_call":
+                    elif item.get("type") in ("function_call", "custom_tool_call"):
                         emit("response.output_item.added", {"output_index": output_index, "item": dict(item, status="in_progress")})
-                        emit("response.function_call_arguments.delta", {"item_id": item.get("id"), "output_index": output_index, "delta": item.get("arguments", "{}")})
-                        emit("response.function_call_arguments.done", {"item_id": item.get("id"), "output_index": output_index, "arguments": item.get("arguments", "{}")})
+                        if item.get("type") == "custom_tool_call":
+                            emit("response.custom_tool_call_input.delta", {"item_id": item.get("id"), "output_index": output_index, "delta": item.get("input", "")})
+                            emit("response.custom_tool_call_input.done", {"item_id": item.get("id"), "output_index": output_index, "input": item.get("input", "")})
+                        else:
+                            emit("response.function_call_arguments.delta", {"item_id": item.get("id"), "output_index": output_index, "delta": item.get("arguments", "{}")})
+                            emit("response.function_call_arguments.done", {"item_id": item.get("id"), "output_index": output_index, "arguments": item.get("arguments", "{}")})
                         emit("response.output_item.done", {"output_index": output_index, "item": item})
                 emit("response.completed", {"response": converted})
                 write_data_sse(self, "[DONE]")
@@ -1453,8 +1490,16 @@ class ProxyHandler(BaseHTTPRequestHandler):
             item = codex_function_call_item(tool_call, offset)
             output_index = len(output)
             emit("response.output_item.added", {"output_index": output_index, "item": dict(item, status="in_progress")})
-            emit("response.function_call_arguments.delta", {"item_id": item["id"], "output_index": output_index, "delta": item["arguments"]})
-            emit("response.function_call_arguments.done", {"item_id": item["id"], "output_index": output_index, "arguments": item["arguments"]})
+            # WHY: custom/freeform tools (apply_patch 等) come back as
+            # custom_tool_call, which carries "input" instead of "arguments";
+            # indexing item["arguments"] there raised KeyError and killed the
+            # whole stream.
+            if item.get("type") == "custom_tool_call":
+                emit("response.custom_tool_call_input.delta", {"item_id": item["id"], "output_index": output_index, "delta": item.get("input", "")})
+                emit("response.custom_tool_call_input.done", {"item_id": item["id"], "output_index": output_index, "input": item.get("input", "")})
+            else:
+                emit("response.function_call_arguments.delta", {"item_id": item["id"], "output_index": output_index, "delta": item.get("arguments", "{}")})
+                emit("response.function_call_arguments.done", {"item_id": item["id"], "output_index": output_index, "arguments": item.get("arguments", "{}")})
             emit("response.output_item.done", {"output_index": output_index, "item": item})
             output.append(item)
         # WHY: Inject a reasoning item when client requested thinking but upstream
