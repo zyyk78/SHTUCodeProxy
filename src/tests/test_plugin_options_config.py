@@ -1,7 +1,7 @@
 """插件配置外置: 部署相关路径/上限不再硬编码在插件源码里。
 
 背景:
-qwen_image 插件原先把 `MODEL_ROOT = /mnt/HDD1/llm/qwen-image-2.1` 写死在源码中,
+qwen_image 插件原先把 `MODEL_ROOT = /srv/SRV/llm/qwen-image-2.1` 写死在源码中,
 既泄漏部署信息, 也让插件无法在别的机器上复用。改为从 config.json 的
 plugins[].options 段注入, 并且**配置缺失时显式报不健康, 绝不猜路径**。
 """
@@ -149,97 +149,93 @@ def test_plugin_without_configure_still_loads():
 # ------------------------------------------------------------- 插件自身行为
 
 
-def _load_qwen(options):
+def _load_comfy(options):
     plugin_dir = Path(__file__).resolve().parents[1] / "plugins"
     sys.path.insert(0, str(plugin_dir))
     try:
-        import qwen_image
+        import comfy_workflow
     finally:
         sys.path.pop(0)
-    qwen_image.configure(options)
-    return qwen_image
+    comfy_workflow.configure(options)
+    return comfy_workflow
 
 
-def test_qwen_source_contains_no_hardcoded_local_paths():
+def test_comfy_source_contains_no_hardcoded_local_paths():
     """源码里不能再出现任何部署相关的绝对路径。"""
-    source = (Path(__file__).resolve().parents[1] / "plugins" / "qwen_image.py").read_text(encoding="utf-8")
+    source = (Path(__file__).resolve().parents[1] / "plugins" / "comfy_workflow.py").read_text(encoding="utf-8")
     for needle in ("/mnt/", "/home/", "HDD1", "zyyk78"):
         assert needle not in source, f"插件源码里仍残留本地路径信息: {needle}"
 
 
-def test_qwen_without_options_is_not_ready_and_reports_missing():
-    qwen_image = _load_qwen({})
-    assert qwen_image.SETTINGS.unconfigured() == ["model_root", "run_script"]
-    assert qwen_image.SETTINGS.ready() is False
+def test_comfy_without_options_is_not_ready_and_reports_missing():
+    comfy_workflow = _load_comfy({})
+    assert comfy_workflow.SETTINGS.unconfigured() == ["workflows_dir", "comfy_output_root"]
+    assert comfy_workflow.SETTINGS.ready() is False
 
 
-def test_qwen_with_options_becomes_ready(tmp_path):
-    model_root = tmp_path / "model"
-    (model_root / "scripts").mkdir(parents=True)
-    script = model_root / "scripts" / "run.sh"
-    script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+def test_comfy_with_options_becomes_ready(tmp_path):
+    wf_dir = tmp_path / "workflows"
+    wf_dir.mkdir()
     data_root = tmp_path / "data"
 
-    qwen_image = _load_qwen({
-        "model_root": str(model_root),
+    comfy_workflow = _load_comfy({
+        "comfy_url": "http://127.0.0.1:8188",
+        "workflows_dir": str(wf_dir),
+        "comfy_output_root": str(tmp_path / "output"),
         "data_root": str(data_root),
-        "run_script": "scripts/run.sh",
     })
-    assert qwen_image.SETTINGS.unconfigured() == []
-    assert qwen_image.SETTINGS.ready() is True
-    assert qwen_image.SETTINGS.run_script == script
-    assert qwen_image.SETTINGS.output_dir == data_root / "outputs"
-    assert qwen_image.SETTINGS.upload_dir == data_root / "uploads"
-    assert qwen_image.SETTINGS.log_dir == data_root / "logs"
+    assert comfy_workflow.SETTINGS.unconfigured() == []
+    assert comfy_workflow.SETTINGS.ready() is True
+    assert comfy_workflow.SETTINGS.comfy_url == "http://127.0.0.1:8188"
+    assert comfy_workflow.SETTINGS.workflows_dir == wf_dir
+    assert comfy_workflow.SETTINGS.output_dir == data_root / "outputs"
+    assert comfy_workflow.SETTINGS.upload_dir == data_root / "uploads"
+    assert comfy_workflow.SETTINGS.log_dir == data_root / "logs"
 
 
-def test_qwen_run_script_missing_file_is_not_ready(tmp_path):
-    model_root = tmp_path / "model"
-    model_root.mkdir()
-    qwen_image = _load_qwen({
-        "model_root": str(model_root),
+def test_comfy_workflows_dir_missing_is_not_ready(tmp_path):
+    comfy_workflow = _load_comfy({
+        "comfy_url": "http://127.0.0.1:8188",
+        "workflows_dir": str(tmp_path / "no-such-dir"),
+        "comfy_output_root": str(tmp_path / "output"),
         "data_root": str(tmp_path / "data"),
-        "run_script": "scripts/run.sh",
     })
-    assert qwen_image.SETTINGS.unconfigured() == []
-    assert qwen_image.SETTINGS.ready() is False, "脚本不存在时不应报健康"
+    assert comfy_workflow.SETTINGS.unconfigured() == ["workflows_dir"]
+    assert comfy_workflow.SETTINGS.ready() is False, "workflow 目录不存在时不应报健康"
 
 
-def test_qwen_options_override_limits(tmp_path):
-    model_root = tmp_path / "model"
-    (model_root / "scripts").mkdir(parents=True)
-    (model_root / "scripts" / "run.sh").write_text("#!/bin/sh\n", encoding="utf-8")
-    qwen_image = _load_qwen({
-        "model_root": str(model_root), "data_root": str(tmp_path / "d"),
-        "run_script": "scripts/run.sh", "prompt_max": 111, "upload_max_mb": 3,
+def test_comfy_options_override_limits(tmp_path):
+    comfy_workflow = _load_comfy({
+        "comfy_url": "http://127.0.0.1:8188",
+        "workflows_dir": str(tmp_path / "workflows"),
+        "data_root": str(tmp_path / "d"),
+        "prompt_max": 111, "upload_max_mb": 3,
     })
-    assert qwen_image.SETTINGS.prompt_max == 111
-    assert qwen_image.SETTINGS.upload_max_bytes == 3 * 1024 * 1024
+    assert comfy_workflow.SETTINGS.prompt_max == 111
+    assert comfy_workflow.SETTINGS.upload_max_bytes == 3 * 1024 * 1024
 
 
-def test_qwen_garbage_limits_fall_back_to_defaults(tmp_path):
-    model_root = tmp_path / "model"
-    (model_root / "scripts").mkdir(parents=True)
-    (model_root / "scripts" / "run.sh").write_text("#!/bin/sh\n", encoding="utf-8")
-    qwen_image = _load_qwen({
-        "model_root": str(model_root), "data_root": str(tmp_path / "d"),
-        "run_script": "scripts/run.sh", "prompt_max": "abc", "upload_max_mb": "xyz",
+def test_comfy_garbage_limits_fall_back_to_defaults(tmp_path):
+    comfy_workflow = _load_comfy({
+        "comfy_url": "http://127.0.0.1:8188",
+        "workflows_dir": str(tmp_path / "workflows"),
+        "data_root": str(tmp_path / "d"),
+        "prompt_max": "abc", "upload_max_mb": "xyz",
     })
-    assert qwen_image.SETTINGS.prompt_max == 8000
-    assert qwen_image.SETTINGS.upload_max_bytes == 50 * 1024 * 1024
+    assert comfy_workflow.SETTINGS.prompt_max == 8000
+    assert comfy_workflow.SETTINGS.upload_max_bytes == 50 * 1024 * 1024
 
 
-def test_qwen_configure_updates_module_level_aliases(tmp_path):
+def test_comfy_configure_updates_module_level_aliases(tmp_path):
     """内部逻辑仍在用这些模块级名字, configure() 后必须同步指向新值。"""
-    model_root = tmp_path / "m2"
-    (model_root / "scripts").mkdir(parents=True)
-    (model_root / "scripts" / "run.sh").write_text("#!/bin/sh\n", encoding="utf-8")
     data_root = tmp_path / "d2"
-    qwen_image = _load_qwen({
-        "model_root": str(model_root), "data_root": str(data_root),
-        "run_script": "scripts/run.sh", "prompt_max": 7,
+    comfy_workflow = _load_comfy({
+        "comfy_url": "http://127.0.0.1:8188",
+        "workflows_dir": str(tmp_path / "workflows"),
+        "data_root": str(data_root),
+        "prompt_max": 7,
     })
-    assert qwen_image.OUTPUT_DIR == data_root / "outputs"
-    assert qwen_image.UPLOAD_DIR == data_root / "uploads"
-    assert qwen_image.LOG_DIR == data_root / "logs"
-    assert qwen_image.PROMPT_MAX == 7
+    assert comfy_workflow.OUTPUT_DIR == data_root / "outputs"
+    assert comfy_workflow.UPLOAD_DIR == data_root / "uploads"
+    assert comfy_workflow.LOG_DIR == data_root / "logs"
+    assert comfy_workflow.PROMPT_MAX == 7

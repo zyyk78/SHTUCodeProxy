@@ -22,25 +22,27 @@ class FakeHandler:
 def test_plugin_config_round_trip():
     cfg = AppConfig.from_dict({
         "plugin_dir": "src/plugins",
-        "plugins": [{"module": "qwen_image.py", "enabled": True, "timeout": 120}],
+        "plugins": [{"module": "comfy_workflow.py", "enabled": True, "timeout": 120}],
     })
     assert cfg.plugin_dir == "src/plugins"
     assert cfg.plugins[0].to_dict() == {
-        "enabled": True, "module": "qwen_image.py", "timeout": 120,
+        "enabled": True, "module": "comfy_workflow.py", "timeout": 120,
     }
 
 
 def test_plugin_loader_loads_routes():
     cfg = AppConfig.from_dict({
         "plugin_dir": "src/plugins",
-        "plugins": [{"module": "qwen_image.py", "enabled": True}],
+        "plugins": [{"module": "comfy_workflow.py", "enabled": True}],
     })
     routes = load_route_plugins(cfg)
     assert [type(x).__name__ for x in routes] == [
-        "QwenHealth", "QwenGenerate", "QwenStatus", "QwenResult", "QwenDelete",
+        "ComfyGraphGet", "ComfyGraphSubmit",
+        "ComfyWorkflowList", "ComfyWorkflowSurface",
+        "ComfyHealth", "ComfyStatus", "ComfyResult", "ComfyDelete",
     ]
-    assert routes[0].auth_exempt is True
-    assert routes[4].handles("DELETE", "/qwen/image/jobs/abc")
+    assert routes[4].auth_exempt is True
+    assert routes[7].handles("DELETE", "/comfy/workflow/jobs/abc")
 
 
 def test_missing_plugin_fails_closed():
@@ -61,16 +63,16 @@ def test_proxy_dispatches_plugin_route_after_auth(monkeypatch):
 
     class P:
         method = "GET"
-        paths = ("/qwen/test",)
+        paths = ("/comfy/test",)
         def handles(self, method, path):
-            return method == "GET" and path == "/qwen/test"
+            return method == "GET" and path == "/comfy/test"
 
         def handle(self, handler, config, plugin):
             called["ok"] = True
             return True
 
     monkeypatch.setattr(proxy, "route_plugins", lambda: [P()])
-    handler = FakeHandler("/qwen/test")
+    handler = FakeHandler("/comfy/test")
     assert proxy.ProxyHandler.do_GET(handler) is None
     assert called["ok"] is True
 
@@ -81,15 +83,15 @@ def test_proxy_delete_dispatches_prefix_plugin(monkeypatch):
     class P:
         method = "DELETE"
         paths = ()
-        prefixes = ("/qwen/image/jobs/",)
+        prefixes = ("/comfy/workflow/jobs/",)
         def handles(self, method, path):
-            return method == "DELETE" and path == "/qwen/image/jobs/abc"
+            return method == "DELETE" and path == "/comfy/workflow/jobs/abc"
 
         def handle(self, handler, config, plugin):
             called["ok"] = True
             return True
 
     monkeypatch.setattr(proxy, "route_plugins", lambda: [P()])
-    handler = FakeHandler("/qwen/image/jobs/abc")
+    handler = FakeHandler("/comfy/workflow/jobs/abc")
     assert proxy.ProxyHandler.do_DELETE(handler) is None
     assert called["ok"] is True
