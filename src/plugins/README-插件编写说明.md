@@ -1,31 +1,16 @@
-# SHTUCodeProxy
+# 插件编写说明
 
-自托管 HTTP 代理，提供 Anthropic Messages / OpenAI Responses / Chat Completions 转发，并支持模块化外部路由插件。
+SHTUCodeProxy 除 LLM 转发外，还允许外部插件注册额外的 HTTP 路由。仓库内置 `comfy_workflow.py`，把 ComfyUI workflow 任务暴露到同一端口。
 
-## 主要功能
+项目整体说明见根目录 [README](../../README.md)；ComfyUI 接口的完整操作手册见 [README-接口使用说明.md](README-接口使用说明.md)。
 
-- Anthropic Messages → OpenAI Responses / Chat Completions
-- OpenAI Responses → upstream
-- SSE / 非流式桥接
-- 统一模型配置：`name` + `upstream_model`
-- 外部插件路由（module + paths + handle）
-
-## 快速开始
-
-```bash
-cp config.example.json src/config.json
-PYTHONPATH=src python src/proxy.py
-```
-
-默认端口读取 `config.json` 中的 `port`，也可用 `PORT` / `HOST` 覆盖。
-
-## 插件
+## 注册插件
 
 在 `config.json` 中添加：
 
 ```json
 {
-  "plugin_dir": "/home/zyyk78/Downloads/SHTUCodeProxy/src/plugins",
+  "plugin_dir": "/opt/SHTUProxy/plugins",
   "plugins": [
     {"module": "comfy_workflow.py", "enabled": true, "timeout": 600}
   ]
@@ -78,14 +63,8 @@ class Route:
 | GET | `/comfy/workflow/result?job_id=...` | 下载 PNG |
 | DELETE | `/comfy/workflow/jobs/<job_id>` | 删除已完成任务 |
 
-## 测试
+## 部署值外置
 
-```bash
-PYTHONPATH=src uv run --with pytest --python /opt/anaconda3/bin/python3 pytest -q
-```
+插件部署相关值（`comfy_url` / `workflows_dir` / `data_root` / 各种上限）都放在 `plugins[].options` 里，不要硬编码进插件源码。完整 options 示例见 [`config.example.json`](../../config.example.json)。
 
-## 配置
-
-不要提交真实 API key。`src/config.json` 是本机配置；示例见 `config.example.json`。
-
-插件部署相关值（`comfy_url` / `workflows_dir` / `data_root` / 各种上限）都放在 `plugins[].options` 里，不要硬编码进插件源码。完整 options 示例见 `config.example.json`。
+配置缺失时插件应显式报不健康，**绝不猜路径**——猜错的路径会让任务静默写到别处，比直接失败更难排查。

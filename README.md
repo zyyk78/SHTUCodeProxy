@@ -17,6 +17,7 @@
 - 转换（网关）模式，将你的编程工具接入上科大的 LLM API，适用于上科大这种一个模型一个key的零散场景
 - 透传模式，可以同步整合校外API
 - 可以通过映射模型名称，自由在校内模型和你自己买的模型之间切换
+- 模块化外部路由插件：把ComfyUI workflow 任务等非 LLM 能力挂到同一端口上
 注意，之前学校模型的tool use似乎有点毛病，所以普通的转接用不了，现在好像又修复了，大家也可以试一下
 ---
 
@@ -48,6 +49,8 @@
 - **ssl_cert**&**ssl_key**：用于开启SSL,填写后自动开启HTTPS访问并关闭HTTP，如果仅本地部署本地使用倒是无所谓，但是请配合下面的白名单
 
 - **allowed_ips**&**denied_ips**：黑白名单，黑名单高于白名单，支持单 IP 与 CIDR，如果仅本地部署使用，请在白名单里面写一个127.0.0.1（会自动开启）
+
+- **max_request_body_bytes**：单个请求体的字节上限，默认 `31457280`（30 MB）。内嵌图片走base64 data URL，体积很容易顶穿较小的上限；调大后热生效，不必重启。校方上游另有约 20 MB 的图片上限，超出时上游会回「非法的base64图片数据」
 
 在example中的models字段，前两个是转换模式
 
@@ -89,6 +92,8 @@ windows用户可以自己注册为服务
 | POST | `/v1/responses`             | OpenAI Responses 代理入口   |
 | POST | `/v1/messages/count_tokens` | Token 计数                |
 
+`/responses`、`/compact`、`/cancel`、`/input_items` 等 Codex 专有路径也一并支持，带不帶 `/v1` 前缀均可。
+
 ---
 
 ## 客户端接入
@@ -108,3 +113,24 @@ windows用户可以自己注册为服务
 在 `~/.codex/config.toml` 指向本代理，`wire_api` 用 `responses`，模型名填 `config.json` 里的 `model_id`。
 
 然后在~/.codex/auth.json里填入key
+
+---
+
+## 插件
+
+除LLM 转发外，代理还能通过插件挂载额外的 HTTP 路由（目前内置 ComfyUI workflow 任务接口）。在 `config.json` 的 `plugins[]` 中声明即可。
+
+部署相关的路径与上限都放在 `plugins[].options` 里由配置注入，插件源码不硬编码任何本机路径。
+
+## 文档
+
+- [插件编写说明](src/plugins/README-插件编写说明.md) —— 如何注册插件、Route 接口约定、路由执行顺序、内置 ComfyUI 路由一览
+- [ComfyUI Workflow 接口使用说明](src/plugins/README-接口使用说明.md) —— workflow 模板查询、surface 编辑、提交任务、结果下载的完整操作手册
+
+## 测试
+
+```bash
+PYTHONPATH=src uv run --with pytest --python /opt/anaconda3/bin/python3 pytest -q
+```
+
+不要提交真实 API key。`src/config.json` 是本机配置，已在 `.gitignore` 中排除；示例见 `config.example.json`。
