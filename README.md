@@ -125,7 +125,7 @@ windows用户可以自己注册为服务
 ## 文档
 
 - [插件编写说明](src/plugins/README-插件编写说明.md) —— 如何注册插件、Route 接口约定、路由执行顺序、内置 ComfyUI 路由一览
-- [ComfyUI Workflow 接口使用说明](src/plugins/README-接口使用说明.md) —— workflow 模板查询、surface 编辑、提交任务、结果下载的完整操作手册
+- [ComfyUI Workflow 接口使用说明](src/plugins/README-ComfyUI接口使用说明.md) —— workflow 模板查询、surface 编辑、提交任务、结果下载的完整操作手册
 
 ## 测试
 

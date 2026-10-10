@@ -2,7 +2,7 @@
 
 SHTUCodeProxy 除 LLM 转发外，还允许外部插件注册额外的 HTTP 路由。仓库内置 `comfy_workflow.py`，把 ComfyUI workflow 任务暴露到同一端口。
 
-项目整体说明见根目录 [README](../../README.md)；ComfyUI 接口的完整操作手册见 [README-接口使用说明.md](README-接口使用说明.md)。
+项目整体说明见根目录 [README](../../README.md)；ComfyUI 接口的完整操作手册见 [README-ComfyUI接口使用说明.md](README-ComfyUI接口使用说明.md)。
 
 ## 注册插件
 

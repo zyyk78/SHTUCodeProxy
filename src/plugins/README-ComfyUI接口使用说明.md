@@ -54,7 +54,7 @@ PY
 
 注意：图片内容本身不做 magic-number 校验，但改成 `.png` 后缀的非图片文件会在 ComfyUI 执行时报错并回传到 `/jobs`。
 
-**agent 自举提示**：本文档随插件分发（`src/plugins/README-接口使用说明.md`），
+**agent 自举提示**：本文档随插件分发（`src/plugins/README-ComfyUI接口使用说明.md`），
 Skill/使用者把它放进你的上下文即为准绳。不确定接口细节时先重读本文档，
 不要依赖记忆或猜测路由。
 
@@ -353,6 +353,11 @@ cat "/tmp/comfy-wf-data/logs/$JOB.log"   # 测试配置；线上是 data_root/lo
 
 常用超时：渲染 50 步 2K 图约 1-2 分钟；`max_wait` 默认 600 秒。
 
+**Agent 提示**：如果你的宿主支持后台任务（如 Claude Code 的后台 Bash +
+Monitor、通用 Agent 的后台进程轮询），推荐把「轮询到完成」封装成一个原子
+脚本丢进后台——完成即退出，宿主在事件/退出时取结果；宿主没有该能力就按
+上面的节奏手动查，不要逐次烧 API 调用做密集轮询。
+
 ## 5. 下载结果图
 
 ```bash
@@ -512,7 +517,7 @@ ComfyUI 会把模型常驻显存（单卡可到 ~13GB）加速连续生成；共
 `KEY`（config.json 里的 auth_key）。`managed_output_subdir` 是服务端配置，
 提交时无需关心。
 
-**第 2 步：读文档。** 本手册（`src/plugins/README-接口使用说明.md`）随插件
+**第 2 步：读文档。** 本手册（`src/plugins/README-ComfyUI接口使用说明.md`）随插件
 分发，由 Skill 或使用者提供给你。文档是权威依据，之后的任何不确定都以
 它为准，不要靠猜。
 
