@@ -1023,6 +1023,11 @@ def _rewrite_filename_prefix(graph: dict, prefix: str) -> None:
             inputs["filename_prefix"] = f"{prefix}{base}"
 
 
+#: 用户直接编辑的自由文本字段 — prompt_max 只约束这些
+_USER_TEXT_INPUTS = {"prompt", "positive_prompt", "negative_prompt",
+                     "text", "value_prompt"}
+
+
 def validate_workflow_graph(graph: dict, settings: "Settings") -> None:
     """提交前合规校验。失败抛 ValueError，由调用方转成 400 + 完整报错。
 
@@ -1042,6 +1047,15 @@ def validate_workflow_graph(graph: dict, settings: "Settings") -> None:
     for node_id, node in graph.items():
         if not isinstance(node_id, str) or not node_id:
             raise ValueError(f"invalid node id: {node_id!r}")
+        # WHY: prompt_max 之前只是配置没有校验 (死配置)。只校验用户直接
+        # 编辑的 prompt 字段名; 模板内置的长说明文本 (如 prompt enhancer
+        # 的系统提示词 ~10KB) 属于模板资产, 不在限制范围内。
+        for key, val in node.get("inputs", {}).items():
+            if isinstance(val, str) and key.lower() in _USER_TEXT_INPUTS                     and len(val) > settings.prompt_max:
+                raise ValueError(
+                    f"node {node_id}.{key} exceeds prompt_max: "
+                    f"{len(val)} > {settings.prompt_max}"
+                )
         if not isinstance(node, dict):
             raise ValueError(f"node {node_id} must be an object")
         class_type = node.get("class_type")
@@ -1153,6 +1167,9 @@ class ComfyWorkflowDocs(RoutePlugin):
         from urllib.parse import urlparse, parse_qs
         query = parse_qs(urlparse(handler.path).query)
         fmt = (query.get("format") or ["markdown"])[0].lower()
+        if fmt not in ("markdown", "json"):
+            send_json(handler, 400, {"error": f"unknown format: {fmt!r}",
+                                     "available": ["markdown", "json"]}); return True
         if fmt == "json":
             endpoints = [
                 {"method": "GET",  "path": "/comfy/workflow/health",              "desc": "插件状态 (auth_exempt)"},

@@ -38,11 +38,13 @@ def test_plugin_loader_loads_routes():
     routes = load_route_plugins(cfg)
     assert [type(x).__name__ for x in routes] == [
         "ComfyGraphGet", "ComfyGraphSubmit",
-        "ComfyWorkflowList", "ComfyWorkflowSurface",
-        "ComfyHealth", "ComfyStatus", "ComfyResult", "ComfyDelete",
+        "ComfyWorkflowList", "ComfyWorkflowDocs", "ComfyWorkflowSurface",
+        "ComfyHealth", "ComfyStatus", "ComfyResult", "ComfyDelete", "ComfyPurge",
     ]
-    assert routes[4].auth_exempt is True
-    assert routes[7].handles("DELETE", "/comfy/workflow/jobs/abc")
+    assert routes[5].auth_exempt is True
+    assert routes[8].handles("DELETE", "/comfy/workflow/jobs/abc")
+    assert routes[3].handles("GET", "/comfy/workflow/docs")
+    assert routes[9].handles("POST", "/comfy/workflow/purge")
 
 
 def test_missing_plugin_fails_closed():
