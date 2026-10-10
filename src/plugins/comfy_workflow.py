@@ -366,8 +366,11 @@ def _wf_dir() -> Optional[Path]:
 def list_workflows() -> list:
     """扫描 workflows_dir 里的实际 workflow 文件。
 
-    只返回磁盘上真实存在的文件；description 只从 workflow JSON 自身的
-    顶层 "description" 字段读取，没有就是 null，不做任何猜测/缓存。
+    只返回磁盘上真实存在的文件。description 取值顺序:
+    1. workflow JSON 顶层 "description" 字段 (显式声明优先);
+    2. 模板自带 MarkdownNote/Note 的首行标题 (ComfyUI 导出的模板
+       没有 "description" 字段, 但 note 里有现成的功能说明)。
+    都没有才是 null。
     """
     d = _wf_dir()
     if not d or not d.is_dir():
@@ -382,10 +385,64 @@ def list_workflows() -> list:
             continue
         if isinstance(meta, dict):
             desc = meta.get("description")
-            out.append({"file": p.name, "description": desc if isinstance(desc, str) else None})
+            if isinstance(desc, str) and desc.strip():
+                out.append({"file": p.name, "description": desc.strip()})
+            else:
+                # WHY: agent 选模板时不应被迫先逐个拉 surface。note 首行
+                # 就是作者写的功能说明, 提取成一行摘要随列表返回。
+                out.append({"file": p.name, "description": workflow_note_summary(meta)})
         else:
             out.append({"file": p.name, "description": None})
     return out
+
+
+def workflow_note_summary(ui_workflow: dict, max_len: int = 180) -> Optional[str]:
+    """从模板自带的 MarkdownNote/Note 里取一段短摘要。
+
+    WHY: ComfyUI 导出的 workflow JSON 顶层没有 description 字段，模型/agent
+    列模板时只看到 null，只能逐个拉 surface 才知道模板是干嘛的。
+    模板作者通常已经在画布上写了 MarkdownNote（官方说明/参数含义），
+    这里把标题含 Usage 的 note 的前几句正文抽出来当摘要，列表一步可用。
+    完整说明仍然以 surface 的 notes 为准，这里只是索引，不做缓存。
+    """
+    if not isinstance(ui_workflow, dict):
+        return None
+    notes = []
+    for node in ui_workflow.get("nodes") or []:
+        if not isinstance(node, dict):
+            continue
+        if str(node.get("type") or "") not in ("MarkdownNote", "Note"):
+            continue
+        values = node.get("widgets_values")
+        text = values[0] if isinstance(values, list) and values else node.get("text")
+        if isinstance(text, str) and text.strip():
+            notes.append((node, text))
+    if not notes:
+        return None
+    # 优先取标题含 Usage 的 note (模板作者写的用法说明), 其次第一份。
+    chosen = next((n for n, _ in notes if "usage" in str(n.get("title") or "").lower()), notes[0])
+    text = dict((id(n), t) for n, t in notes)[id(chosen)]
+    # 章节标题: 这些小节没有正文价值, 到此截断即可。
+    section_titles = {
+        "reference images", "custom settings", "transparent image",
+        "model links", "input assets", "prompt enhancer", "pe",
+    }
+    parts = []
+    for line in text.splitlines():
+        stripped = line.strip().lstrip("#").strip()
+        # WHY: "Guide: [Subgraph](...)" 这类前缀行看着是首行,
+        # 其实是导航链接, 没有模板信息量。
+        if not stripped or (stripped.lower().startswith(("guide", "note")) and ":" in stripped[:12]):
+            continue
+        if stripped.startswith(("[", "http", "![", "|", "-", "*", ">")):
+            continue
+        if stripped.lower() in section_titles:
+            break
+        parts.append(stripped)
+        if sum(len(p) for p in parts) >= max_len:
+            break
+    result = " ".join(parts)
+    return (result[:max_len] + "…") if len(result) > max_len else (result or None)
 
 
 def read_multipart(handler: BaseHTTPRequestHandler):
