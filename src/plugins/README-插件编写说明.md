@@ -51,17 +51,17 @@ class Route:
 
 默认路径：
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/comfy/workflow/health` | 插件状态 |
-| GET | `/comfy/workflow/workflows` | **列出可用 workflow**（agent 第一步） |
-| GET | `/comfy/workflow/workflows/<id>/surface` | **获取可编辑面**（agent 第二步：顶层参数/连线/图输入） |
-| GET | `/comfy/workflow/graph/<id>` | 获取 workflow 原文（调试/编辑用） |
-| POST | `/comfy/workflow/graph/submit` | **提交修改后的 graph**（agent 第三步，可带图） |
-| GET | `/comfy/workflow/jobs?job_id=...` | 查询单个任务 |
-| GET | `/comfy/workflow/jobs` | 查询 running/queued/history |
-| GET | `/comfy/workflow/result?job_id=...` | 下载 PNG |
-| DELETE | `/comfy/workflow/jobs/<job_id>` | 删除已完成任务 |
+| 方法     | 路径                                       | 说明                                |
+| ------ | ---------------------------------------- | --------------------------------- |
+| GET    | `/comfy/workflow/health`                 | 插件状态                              |
+| GET    | `/comfy/workflow/workflows`              | **列出可用 workflow**（agent 第一步）      |
+| GET    | `/comfy/workflow/workflows/<id>/surface` | **获取可编辑面**（agent 第二步：顶层参数/连线/图输入） |
+| GET    | `/comfy/workflow/graph/<id>`             | 获取 workflow 原文（调试/编辑用）            |
+| POST   | `/comfy/workflow/graph/submit`           | **提交修改后的 graph**（agent 第三步，可带图）   |
+| GET    | `/comfy/workflow/jobs?job_id=...`        | 查询单个任务                            |
+| GET    | `/comfy/workflow/jobs`                   | 查询 running/queued/history         |
+| GET    | `/comfy/workflow/result?job_id=...`      | 下载 PNG                            |
+| DELETE | `/comfy/workflow/jobs/<job_id>`          | 删除已完成任务                           |
 
 ## 部署值外置
 
