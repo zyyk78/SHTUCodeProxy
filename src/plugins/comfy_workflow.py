@@ -70,6 +70,11 @@ class Settings:
         # 0 = 关闭看门狗 (默认关, 避免和人工使用 ComfyUI 的人抢显存)。
         self.vram_unload_idle_s = _to_int(opts.get("vram_unload_idle_s"), os.environ.get("COMFY_WORKFLOW_VRAM_UNLOAD_IDLE_S"), 0)
         self.vram_unload_used_gb = _to_int(opts.get("vram_unload_used_gb"), os.environ.get("COMFY_WORKFLOW_VRAM_UNLOAD_USED_GB"), 8)
+        # 托管输出目录: 设置后插件提交的任务会被改写 filename_prefix,
+        # 让 ComfyUI 直接把图写进 output/<managed_output_subdir>/,
+        # 与 Web 端手工生成的图物理隔离。空 = 不改写 (兼容旧行为)。
+        mod = _first_set(opts.get("managed_output_subdir"), os.environ.get("COMFY_WORKFLOW_MANAGED_OUTPUT_SUBDIR"))
+        self.managed_output_subdir: str = str(mod).strip().strip("/") if mod else ""
         # 输出生命周期
         self.output_retention_hours = _to_int(opts.get("output_retention_hours"), os.environ.get("COMFY_WORKFLOW_OUTPUT_RETENTION_HOURS"), 24)
         self.output_max_files = _to_int(opts.get("output_max_files"), os.environ.get("COMFY_WORKFLOW_OUTPUT_MAX_FILES"), 200)
@@ -260,6 +265,16 @@ class Worker:
                 else:
                     raise RuntimeError("job has no graph (graph 模式必填)")
 
+                # WHY: managed_output_subdir 配置后, 改写 SaveImage 节点的
+                # filename_prefix 为 "<subdir>/<原名>-%Y%m%d" 形式 —— ComfyUI
+                # 原生把 prefix 的目录部分当子文件夹 (get_save_image_path 的
+                # subfolder 语义), 并支持 %date% 类变量。这样插件的图全部落
+                # 到 output/<subdir>/20261010_xxx.png, 与 Web 端手工生成的
+                # (output 根目录) 物理隔离; 插件取产物也按这个子目录找。
+                managed = getattr(SETTINGS, "managed_output_subdir", "")
+                if managed:
+                    day_tag = datetime.now().strftime("%Y%m%d")
+                    _rewrite_filename_prefix(graph, f"{managed}/{day_tag}_")
                 comfy_url = SETTINGS.comfy_url
                 # 记录提交时刻，用于防止 ComfyUI 写错目录后插件拿到旧的同名输出。
                 submitted_ts = time.time()
@@ -984,6 +999,28 @@ def canonical_subgraphs() -> dict:
             if isinstance(sg, dict) and sg.get("id"):
                 out[str(sg["id"])] = sg
     return out
+
+
+def _rewrite_filename_prefix(graph: dict, prefix: str) -> None:
+    """把 graph 里所有 SaveImage 类节点的 filename_prefix 改为 prefix+原名。
+
+    只处理 API 格式 graph (顶层 {node_id: {class_type, inputs}})。
+    SaveImage 的 filename_prefix 支持 "subdir/name" 语法 (ComfyUI
+    get_save_image_path 原生语义), 子目录不存在会自动创建。
+    """
+    for node in graph.values():
+        if not isinstance(node, dict):
+            continue
+        ct = node.get("class_type") or ""
+        if not str(ct).startswith("SaveImage"):
+            continue
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+        fp = inputs.get("filename_prefix")
+        if isinstance(fp, str) and fp.strip():
+            base = os.path.basename(fp.strip())
+            inputs["filename_prefix"] = f"{prefix}{base}"
 
 
 def validate_workflow_graph(graph: dict, settings: "Settings") -> None:

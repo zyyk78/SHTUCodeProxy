@@ -431,12 +431,22 @@ file result.png
 
 | 位置 | 内容 | 谁管理 |
 |---|---|---|
-| ComfyUI `output/` 目录（如 `/mnt/HDD1/llm/comfy/output/Qwen_image_2.1_000XX.png`） | ComfyUI 落盘的原件 | ComfyUI 自己；插件不碰 |
+| ComfyUI `output/<managed_output_subdir>/<日期>_<前缀>_*.png` | ComfyUI 落盘的原件 | ComfyUI 写入；插件提交时改写 `filename_prefix` 把它路由进子目录 |
 | 插件 `data_root/outputs/<job_id>.png` + `.json` | 插件复制的副本 + 元数据 | 插件；`DELETE /jobs/<id>` 和 `POST /purge` 都只清这份 |
 
-`GET /result?job_id=` 返回的是**副本**。purge/DELETE 之后 ComfyUI 的原件仍在
-（它按 `filename_prefix` 自己编号滚动），需要彻底清理时直接删
-`comfy_output_root` 下的文件即可，插件不越界代管。
+**与 Web 端隔离**：配置 `managed_output_subdir`（如 `api-web`）后，插件提交的
+任务会被自动改写 `filename_prefix` 为 `<subdir>/<日期>_原名`，ComfyUI 原生
+把 prefix 的目录部分当子文件夹，于是插件的图全部落到
+`output/api-web/20261010_Qwen_image_2.1_00001.png` 这类路径，Web 端手工
+生成的图仍在 output 根目录 —— 两边物理隔离，互不干扰。
+
+- 子目录不存在时 ComfyUI 自动创建
+- 日期标签自动带上（`%Y%m%d`），按天归档
+- 恶意 graph 里的绝对路径 filename_prefix 会被 basename 化后归入子目录，无法逃逸
+- `managed_output_subdir` 不配置则不改写（兼容旧行为，图落到 output 根目录）
+
+purge/DELETE 清的是**副本**；原件在 managed 子目录里按日期滚动，需要彻底
+清理时删 `comfy_output_root/<managed_output_subdir>/` 下的文件即可。
 
 ## VRAM 空闲看门狗
 
