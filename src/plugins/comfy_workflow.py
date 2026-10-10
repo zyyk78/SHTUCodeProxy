@@ -1391,35 +1391,17 @@ class ComfyPurge(RoutePlugin):
 
     @staticmethod
     def _shred(path: Path) -> int:
-        """覆写文件内容后删除, 返回覆写字节数 (-1 = 覆写失败仍删除)。"""
-        size = path.stat().st_size
+        """删除文件, 返回文件大小 (-1 = 删除失败)。
+
+        WHY: 用户确认焚毁语义 = 普通删除即可, 不做覆写 (磁盘块恢复属于
+        理论攻击面, 站内威胁模型下不值得为此加复杂度)。
+        """
         try:
-            # 三轮覆写: 随机 / 0x00 / 0xFF, 每轮后 flush+fsync 确保落盘
-            patterns = [os.urandom(min(size, 1024 * 1024)) or b"\x00",
-                        b"\x00" * min(size, 1024 * 1024),
-                        b"\xff" * min(size, 1024 * 1024)]
-            with open(path, "r+b") as f:
-                remaining = size
-                for pat in patterns:
-                    f.seek(0)
-                    while remaining > 0:
-                        chunk = pat[: min(remaining, len(pat))]
-                        f.write(chunk); remaining -= len(chunk)
-                    f.flush(); os.fsync(f.fileno())
-                    remaining = size
-            # 覆写文件名中的 job_id 痕迹: 改成随机名再删
-            import secrets as _secrets
-            tmp = path.parent / f".shredded-{_secrets.token_hex(8)}.tmp"
-            path.rename(tmp)
-            path = tmp  # finally 阶段删的是改名后的文件
+            size = path.stat().st_size
+            path.unlink(missing_ok=True)
+            return size
         except Exception:
             return -1
-        finally:
-            try:
-                path.unlink(missing_ok=True)
-            except Exception:
-                pass
-        return size
 
     def handle(self, handler, config, plugin):
         try:

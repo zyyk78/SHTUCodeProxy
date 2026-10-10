@@ -423,7 +423,20 @@ file result.png
 | 删除任务 | `DELETE /comfy/workflow/jobs/<job_id>` |
 | 插件/后端状态 | `GET /comfy/workflow/health`（免 key） |
 | **接口文档全文** | `GET /comfy/workflow/docs`（`?format=json` 返回端点清单摘要；agent 自查用，无需本地保存） |
-| **焚毁结果** | `POST /comfy/workflow/purge`（body: `{"job_id":"..."}` 或 `{"all":true}`；三轮覆写后删除，不可恢复） |
+| **焚毁结果** | `POST /comfy/workflow/purge`（body: `{"job_id":"..."}` 或 `{"all":true}`；删除插件产物副本并清任务记录，不可恢复） |
+
+## 产物存放在哪里
+
+一次生成会产生**两份文件**：
+
+| 位置 | 内容 | 谁管理 |
+|---|---|---|
+| ComfyUI `output/` 目录（如 `/mnt/HDD1/llm/comfy/output/Qwen_image_2.1_000XX.png`） | ComfyUI 落盘的原件 | ComfyUI 自己；插件不碰 |
+| 插件 `data_root/outputs/<job_id>.png` + `.json` | 插件复制的副本 + 元数据 | 插件；`DELETE /jobs/<id>` 和 `POST /purge` 都只清这份 |
+
+`GET /result?job_id=` 返回的是**副本**。purge/DELETE 之后 ComfyUI 的原件仍在
+（它按 `filename_prefix` 自己编号滚动），需要彻底清理时直接删
+`comfy_output_root` 下的文件即可，插件不越界代管。
 
 ## VRAM 空闲看门狗
 
