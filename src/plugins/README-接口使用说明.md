@@ -54,8 +54,8 @@ PY
 
 注意：图片内容本身不做 magic-number 校验，但改成 `.png` 后缀的非图片文件会在 ComfyUI 执行时报错并回传到 `/jobs`。
 
-**agent 自举提示**：你在读的这份文档本身可以通过接口获取 —— `GET /comfy/workflow/docs`
-返回全文（`?format=json` 返回端点清单摘要）。新会话不确定接口细节时，先调它，
+**agent 自举提示**：本文档随插件分发（`src/plugins/README-接口使用说明.md`），
+Skill/使用者把它放进你的上下文即为准绳。不确定接口细节时先重读本文档，
 不要依赖记忆或猜测路由。
 
 ## 1. 查询模板列表
@@ -426,7 +426,6 @@ file result.png
 | 下载结果 | `GET /comfy/workflow/result?job_id=` |
 | 删除任务 | `DELETE /comfy/workflow/jobs/<job_id>` |
 | 插件/后端状态 | `GET /comfy/workflow/health`（免 key） |
-| **接口文档全文** | `GET /comfy/workflow/docs`（`?format=json` 返回端点清单摘要；agent 自查用，无需本地保存） |
 | **焚毁结果** | `POST /comfy/workflow/purge`（body: `{"job_id":"..."}` 或 `{"all":true}`；删除插件产物副本并清任务记录，不可恢复） |
 
 ## 产物存放在哪里
@@ -513,8 +512,8 @@ ComfyUI 会把模型常驻显存（单卡可到 ~13GB）加速连续生成；共
 `KEY`（config.json 里的 auth_key）。`managed_output_subdir` 是服务端配置，
 提交时无需关心。
 
-**第 2 步：取文档。** `GET $BASE/comfy/workflow/docs` 拿到本手册全文；要程序
-化消费就用 `?format=json` 拿端点清单。文档是权威依据，之后的任何不确定都以
+**第 2 步：读文档。** 本手册（`src/plugins/README-接口使用说明.md`）随插件
+分发，由 Skill 或使用者提供给你。文档是权威依据，之后的任何不确定都以
 它为准，不要靠猜。
 
 **第 3 步：看有哪些模板。** `GET /comfy/workflow/workflows`，`description`
@@ -783,12 +782,12 @@ description: 通过 SHTUCodeProxy 的 ComfyUI Workflow 插件生成/编辑图片
 7. GET  $BASE/comfy/workflow/result?job_id=...          # completed 后下载
 
 ## 硬性规则
-- 不确定接口细节时先 GET /comfy/workflow/docs 重读文档, 不猜路由
+- 不确定接口细节时重读本手册, 不猜路由
 - 编辑只走 surface; 已知模板的 subgraph 会被服务端锁定覆盖
 - prompt 上限 8000 字符; 单任务上传 ≤50MB
 - 任务结束后 uploads 自动清理; 产物副本在 data_root/outputs/
 ```
 
 **要点**：`description` 字段决定 Agent 何时自动触发这个 Skill，要写清楚触发
-场景；流程写「标准路径」即可，异常处理让 Agent 现场查 docs。装好后新会话
+场景；流程写「标准路径」即可，异常处理让 Agent 重读手册。装好后新会话
 直接说「帮我生成一张图」就会走这套流程，无需再贴任何文档。

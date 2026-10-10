@@ -1133,67 +1133,6 @@ class ComfyWorkflowList(RoutePlugin):
         return True
 
 
-def _docs_markdown() -> str:
-    """读取随插件分发的接口使用手册 (README-接口使用说明.md)。"""
-    path = Path(__file__).with_name("README-接口使用说明.md")
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
-        return ""
-
-
-class ComfyWorkflowDocs(RoutePlugin):
-    """返回本插件的完整 API 使用文档。
-
-    WHY: agent 要用这套接口时不应依赖会话里恰好有人贴过文档，也不该
-    要求使用者本地保存说明。手册随插件分发, 这里直接可查询:
-    ?format=markdown 返回原文 (默认), ?format=json 返回结构化摘要
-    (端点清单 + 各端点说明), 方便程序化消费。
-    """
-    method="GET"; paths=("/comfy/workflow/docs","/v1/comfy/workflow/docs")
-    def handle(self, handler, config, plugin):
-        from urllib.parse import urlparse, parse_qs
-        query = parse_qs(urlparse(handler.path).query)
-        fmt = (query.get("format") or ["markdown"])[0].lower()
-        if fmt not in ("markdown", "json"):
-            send_json(handler, 400, {"error": f"unknown format: {fmt!r}",
-                                     "available": ["markdown", "json"]}); return True
-        if fmt == "json":
-            endpoints = [
-                {"method": "GET",  "path": "/comfy/workflow/health",              "desc": "插件状态 (auth_exempt)"},
-                {"method": "GET",  "path": "/comfy/workflow/workflows",           "desc": "列出可用 workflow 模板 (含说明摘要)"},
-                {"method": "GET",  "path": "/comfy/workflow/workflows/<id>/surface", "desc": "取模板顶层可编辑面 (params/image_inputs/notes)"},
-                {"method": "GET",  "path": "/comfy/workflow/graph/<id>",          "desc": "取 workflow JSON 原文"},
-                {"method": "POST", "path": "/comfy/workflow/graph/submit",        "desc": "提交 (可改过的) workflow JSON, 可带图"},
-                {"method": "GET",  "path": "/comfy/workflow/jobs?job_id=...",     "desc": "查询单个任务"},
-                {"method": "GET",  "path": "/comfy/workflow/jobs",                "desc": "查询 running/queued/history"},
-                {"method": "GET",  "path": "/comfy/workflow/result?job_id=...",   "desc": "下载结果 PNG"},
-                {"method": "DELETE","path": "/comfy/workflow/jobs/<job_id>",      "desc": "删除已完成任务"},
-                {"method": "POST", "path": "/comfy/workflow/purge",               "desc": "焚毁生成结果 (三轮覆写后删除; job_id 或 all:true)"},
-            ]
-            send_json(handler, 200, {
-                "plugin": "comfy-workflow",
-                "doc_format": "markdown",
-                "doc_bytes": len(_docs_markdown()),
-                "endpoints": endpoints,
-                "surface_first": True,
-            })
-            return True
-        doc = _docs_markdown()
-        if not doc:
-            send_json(handler, 404, {"type": "error", "error": {
-                "type": "not_found_error",
-                "message": "README-接口使用说明.md not found next to plugin"}})
-            return True
-        body = doc.encode("utf-8")
-        handler.send_response(200)
-        handler.send_header("Content-Type", "text/markdown; charset=utf-8")
-        handler.send_header("Content-Length", str(len(body)))
-        handler.end_headers()
-        handler.wfile.write(body)
-        return True
-
-
 class ComfyWorkflowSurface(RoutePlugin):
     """返回 UI workflow 的顶层可编辑面（agent 只看/只改这一层）。
 
@@ -1422,7 +1361,7 @@ class ComfyPurge(RoutePlugin):
     WHY: 普通 DELETE 只 unlink, 文件内容仍在磁盘块上, 恢复工具可以找回。
     焚毁场景 (生成内容含隐私/不想留痕) 需要先把字节覆写掉再删。
     范围: 插件自管的产物副本 (OUTPUT_DIR 里的 png/json) — ComfyUI
-    output 目录的原件不在此列 (见 docs 的说明)。
+    output 目录的原件不在此列。
 
     用法:
       POST /comfy/workflow/purge            body: {"job_id": "..."}
@@ -1493,5 +1432,5 @@ class ComfyPurge(RoutePlugin):
 def routes():
     worker.start_once()
     return [ComfyGraphGet(), ComfyGraphSubmit(),
-            ComfyWorkflowList(), ComfyWorkflowDocs(), ComfyWorkflowSurface(),
+            ComfyWorkflowList(), ComfyWorkflowSurface(),
             ComfyHealth(), ComfyStatus(), ComfyResult(), ComfyDelete(), ComfyPurge()]
