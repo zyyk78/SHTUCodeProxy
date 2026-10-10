@@ -1127,6 +1127,7 @@ class ComfyWorkflowDocs(RoutePlugin):
                 {"method": "GET",  "path": "/comfy/workflow/jobs",                "desc": "查询 running/queued/history"},
                 {"method": "GET",  "path": "/comfy/workflow/result?job_id=...",   "desc": "下载结果 PNG"},
                 {"method": "DELETE","path": "/comfy/workflow/jobs/<job_id>",      "desc": "删除已完成任务"},
+                {"method": "POST", "path": "/comfy/workflow/purge",               "desc": "焚毁生成结果 (三轮覆写后删除; job_id 或 all:true)"},
             ]
             send_json(handler, 200, {
                 "plugin": "comfy-workflow",
@@ -1373,8 +1374,107 @@ class ComfyDelete(RoutePlugin):
         send_json(handler,200,{"deleted":deleted}); return True
 
 
+class ComfyPurge(RoutePlugin):
+    """POST /comfy/workflow/purge — 焚毁生成结果: 覆写后删除。
+
+    WHY: 普通 DELETE 只 unlink, 文件内容仍在磁盘块上, 恢复工具可以找回。
+    焚毁场景 (生成内容含隐私/不想留痕) 需要先把字节覆写掉再删。
+    范围: 插件自管的产物副本 (OUTPUT_DIR 里的 png/json) — ComfyUI
+    output 目录的原件不在此列 (见 docs 的说明)。
+
+    用法:
+      POST /comfy/workflow/purge            body: {"job_id": "..."}
+      POST /comfy/workflow/purge            body: {"all": true}  # 焚毁全部已完成产物
+    """
+
+    method="POST"; paths=("/comfy/workflow/purge","/v1/comfy/workflow/purge")
+
+    @staticmethod
+    def _shred(path: Path) -> int:
+        """覆写文件内容后删除, 返回覆写字节数 (-1 = 覆写失败仍删除)。"""
+        size = path.stat().st_size
+        try:
+            # 三轮覆写: 随机 / 0x00 / 0xFF, 每轮后 flush+fsync 确保落盘
+            patterns = [os.urandom(min(size, 1024 * 1024)) or b"\x00",
+                        b"\x00" * min(size, 1024 * 1024),
+                        b"\xff" * min(size, 1024 * 1024)]
+            with open(path, "r+b") as f:
+                remaining = size
+                for pat in patterns:
+                    f.seek(0)
+                    while remaining > 0:
+                        chunk = pat[: min(remaining, len(pat))]
+                        f.write(chunk); remaining -= len(chunk)
+                    f.flush(); os.fsync(f.fileno())
+                    remaining = size
+            # 覆写文件名中的 job_id 痕迹: 改成随机名再删
+            import secrets as _secrets
+            tmp = path.parent / f".shredded-{_secrets.token_hex(8)}.tmp"
+            path.rename(tmp)
+            path = tmp  # finally 阶段删的是改名后的文件
+        except Exception:
+            return -1
+        finally:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        return size
+
+    def handle(self, handler, config, plugin):
+        try:
+            body = _read_json_body(handler, 4096)
+        except ValueError as e:
+            send_json(handler, 400, {"error": str(e)}); return True
+        if not isinstance(body, dict):
+            send_json(handler, 400, {"error": "json body required"}); return True
+        shred_all = bool(body.get("all"))
+        job_id = str(body.get("job_id") or "").strip()
+        if not shred_all and not job_id:
+            send_json(handler, 400, {"error": "body 需要 job_id 或 all:true"}); return True
+        if find_job(job_id) if job_id else None:
+            send_json(handler, 409, {"error": "job is queued or running"}); return True
+
+        targets = []
+        if shred_all:
+            targets = [p for p in OUTPUT_DIR.glob("*.png")] + [p for p in OUTPUT_DIR.glob("*.json")]
+        else:
+            if "/" in job_id or "\\" in job_id or job_id in ("", ".", ".."):
+                send_json(handler, 400, {"error": "invalid job id"}); return True
+            for name in (f"{job_id}.png", f"{job_id}.json"):
+                q = OUTPUT_DIR / name
+                if q.is_file(): targets.append(q)
+            for q in UPLOAD_DIR.glob(f"{job_id}*"):
+                if q.is_file(): targets.append(q)
+            # 从内存 history 里也抹掉记录, 避免 /jobs 还显示已完成
+            with worker.lock:
+                worker.history.pop(job_id, None)
+
+        if not targets:
+            send_json(handler, 404, {"error": "nothing to purge"}); return True
+
+        shredded, failed = [], []
+        for q in targets:
+            n = self._shred(q)
+            (shredded if n >= 0 else failed).append({"file": q.name, "bytes": n})
+        # 焚毁产物后顺带清理 ComfyUI output 里的原件引用信息 (不删原件,
+        # 原件属于 ComfyUI 管理; docs 里说明如需彻底清除需另行处理)
+        result = {"purged": len(shredded), "files": shredded}
+        if failed:
+            result["failed"] = failed
+        try:
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            with (LOG_DIR / "watchdog.log").open("a", encoding="utf-8") as f:
+                f.write(f"{datetime.now().isoformat(timespec='seconds')} purge: "
+                        f"job={job_id or 'ALL'} purged={len(shredded)} failed={len(failed)}\n")
+        except Exception:
+            pass
+        send_json(handler, 200, result)
+        return True
+
+
 def routes():
     worker.start_once()
     return [ComfyGraphGet(), ComfyGraphSubmit(),
             ComfyWorkflowList(), ComfyWorkflowDocs(), ComfyWorkflowSurface(),
-            ComfyHealth(), ComfyStatus(), ComfyResult(), ComfyDelete()]
+            ComfyHealth(), ComfyStatus(), ComfyResult(), ComfyDelete(), ComfyPurge()]

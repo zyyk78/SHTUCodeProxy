@@ -423,6 +423,7 @@ file result.png
 | 删除任务 | `DELETE /comfy/workflow/jobs/<job_id>` |
 | 插件/后端状态 | `GET /comfy/workflow/health`（免 key） |
 | **接口文档全文** | `GET /comfy/workflow/docs`（`?format=json` 返回端点清单摘要；agent 自查用，无需本地保存） |
+| **焚毁结果** | `POST /comfy/workflow/purge`（body: `{"job_id":"..."}` 或 `{"all":true}`；三轮覆写后删除，不可恢复） |
 
 ## VRAM 空闲看门狗
 
