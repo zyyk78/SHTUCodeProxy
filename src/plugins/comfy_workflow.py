@@ -216,14 +216,23 @@ class Worker:
 
     def run(self):
         last_busy = time.monotonic()
+        watchdog_armed = False  # /free 的 flag 是 sticky 的, 需要跟踪以在任务来时撤销
         while True:
             try:
                 job = self.q.get(timeout=5)
             except queue.Empty:
                 # 空闲分支: 到点检查是否该卸载显存。队列有活干时绝不卸。
-                self._maybe_unload_vram(time.monotonic() - last_busy)
+                if not watchdog_armed:
+                    watchdog_armed = self._maybe_unload_vram(time.monotonic() - last_busy)
                 continue
             last_busy = time.monotonic()
+            if watchdog_armed:
+                # WHY: /free 只是给队列挂 flag, 真正的卸载发生在「下一个任务
+                # 结束后」。用户在触发后回来生成, 若不撤销, 任务跑完模型会被
+                # 意外卸掉, 第二张图白付一次重载代价。撤销 = 重新设 false flag
+                # 覆盖 sticky 值。
+                self._cancel_unload()
+                watchdog_armed = False
             with self.lock:
                 self.history[job.id] = job
                 self.current = job
@@ -353,20 +362,21 @@ class Worker:
         except Exception:
             pass
 
-    def _maybe_unload_vram(self, idle_s: float) -> None:
-        """空闲超阈值时调 ComfyUI /free 卸载模型, 释放显存。
+    def _maybe_unload_vram(self, idle_s: float) -> bool:
+        """空闲超阈值时请求 ComfyUI 卸载模型。
 
         WHY: ComfyUI 把模型常驻显存加速连续生成; 共享 4090 上夜间不生成时
-        ~13GB/卡白占着。这里只在「队列空 + 空闲够久 + 占用够高」时卸载,
-        三个条件缺一不可, 避免和正在用 ComfyUI 的人打架。
+        ~13GB/卡白占着。三个条件缺一不可: 队列空 + 空闲够久 + 占用够高。
+        返回 True 表示已向 ComfyUI 挂上 unload flag (sticky, 下个任务
+        结束后生效) —— 调用方须在任务到来时撤销。
         任何失败都静默 (ComfyUI 没开/版本不支持 /free 时不应刷错误日志)。
         """
         idle_s_cfg = SETTINGS.vram_unload_idle_s
         if idle_s_cfg <= 0 or idle_s < idle_s_cfg:
-            return
+            return False
         with self.lock:
             if self.current is not None or not self.q.empty():
-                return  # 双保险: 判定瞬间来了活就不卸
+                return False  # 双保险: 判定瞬间来了活就不卸
         try:
             with urllib.request.urlopen(f"{SETTINGS.comfy_url}/system_stats", timeout=10) as r:
                 stats = json.loads(r.read())
@@ -378,17 +388,31 @@ class Worker:
                 if total and (total - free) / (1024 ** 3) >= threshold_gb:
                     need_free = True; break
             if not need_free:
-                return
+                return False
+            if self._post_free(unload_models=True, free_memory=True):
+                self._watchdog_log(f"armed: idle {int(idle_s)}s >= {idle_s_cfg}s, "
+                                   f"used >= {threshold_gb}GB (卸载将在下个任务结束后生效)")
+                return True
+            return False
+        except Exception:
+            return False
+
+    def _cancel_unload(self) -> None:
+        """撤销已挂上的卸载 flag: 再设一次 false 覆盖 sticky 值。"""
+        if self._post_free(unload_models=False, free_memory=False):
+            self._watchdog_log("cancelled: 任务在卸载生效前到来, 撤销 unload flag")
+
+    def _post_free(self, unload_models: bool, free_memory: bool) -> bool:
+        try:
             req = urllib.request.Request(
                 f"{SETTINGS.comfy_url}/free",
-                data=json.dumps({"unload_models": True, "free_memory": True}).encode(),
+                data=json.dumps({"unload_models": unload_models, "free_memory": free_memory}).encode(),
                 headers={"Content-Type": "application/json"}, method="POST",
             )
             with urllib.request.urlopen(req, timeout=30):
-                _watchdog_log(f"unloaded: idle {int(idle_s)}s >= {idle_s_cfg}s, "
-                              f"used >= {threshold_gb}GB")
+                return True
         except Exception:
-            pass  # 看门狗失败静默: 不影响主流程
+            return False
 
 
 worker = Worker(start=bool(os.environ.get("COMFY_WORKFLOW_PLUGIN_AUTOSTART", "1") not in ("0", "false", "no", "off")))

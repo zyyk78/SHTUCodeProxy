@@ -432,7 +432,11 @@ ComfyUI 会把模型常驻显存（单卡可到 ~13GB）加速连续生成；共
 2. 空闲时长 ≥ `vram_unload_idle_s`（秒，默认 0 = 关闭）
 3. 任一卡占用 ≥ `vram_unload_used_gb`（GB，默认 8）
 
-触发时插件调 ComfyUI `POST /free {"unload_models":true,"free_memory":true}`，卸载历史记录在 `data_root/logs/watchdog.log`。下一次生成时 ComfyUI 会自动重新加载模型（首次会慢几十秒），无需人工干预。
+触发时插件调 ComfyUI `POST /free` 挂上卸载标志。**注意语义**：`/free` 不会立即卸载，标志是持久的（sticky），真正的卸载发生在「下一个任务跑完之后」。因此插件做了配套防护：
+
+- 触发后如果**有新任务到来**，插件会立即撤销标志（再次 `POST /free` 设 false 覆盖），任务正常执行，模型保持常驻 —— 连续生成不受影响
+- 撤销/触发都会记录在 `data_root/logs/watchdog.log`，便于事后核查
+- 任务结束时若标志仍在（即确实无人回来用），ComfyUI 在任务收尾时统一卸载，下次生成重新加载（首次慢几十秒）
 
 在 `config.json` 的 `plugins[].options` 里配置：
 
