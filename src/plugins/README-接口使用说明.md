@@ -463,7 +463,6 @@ ComfyUI 会把模型常驻显存（单卡可到 ~13GB）加速连续生成；共
 触发时插件调 ComfyUI `POST /free` 挂上卸载标志。**注意语义**：`/free` 不会立即卸载，标志是持久的（sticky），真正的卸载发生在「下一个任务跑完之后」。因此插件做了配套防护：
 
 - 触发后如果**有新任务到来**，插件会立即撤销标志（再次 `POST /free` 设 false 覆盖），任务正常执行，模型保持常驻 —— 连续生成不受影响
-- 撤销/触发都会记录在 `data_root/logs/watchdog.log`，便于事后核查
 - 任务结束时若标志仍在（即确实无人回来用），ComfyUI 在任务收尾时统一卸载，下次生成重新加载（首次慢几十秒）
 
 在 `config.json` 的 `plugins[].options` 里配置：
@@ -505,3 +504,81 @@ ComfyUI 会把模型常驻显存（单卡可到 ~13GB）加速连续生成；共
 | `output_retention_hours` / `output_max_files` | 24 / 200 | 副本生命周期（惰性清理） |
 | `vram_unload_idle_s` / `vram_unload_used_gb` | 0（关）/ 8 | VRAM 看门狗，见上文 |
 | `cleanup_interval_s` | 300 | 清理线程间隔
+
+## 写给全新 Agent：五分钟上手
+
+你是第一次接入本服务的 AI Agent？按下面的顺序做，不需要任何背景知识：
+
+**第 1 步：拿到连接信息。** 问你的使用者要三样东西：`BASE`（本代理地址）、
+`KEY`（config.json 里的 auth_key）。`managed_output_subdir` 是服务端配置，
+提交时无需关心。
+
+**第 2 步：取文档。** `GET $BASE/comfy/workflow/docs` 拿到本手册全文；要程序
+化消费就用 `?format=json` 拿端点清单。文档是权威依据，之后的任何不确定都以
+它为准，不要靠猜。
+
+**第 3 步：看有哪些模板。** `GET /comfy/workflow/workflows`，`description`
+字段直接告诉你每个模板是干嘛的。选定模板后：
+
+**第 4 步：取可编辑面。** `GET /comfy/workflow/workflows/<file>/surface` ——
+`params` 是你能改的参数（prompt/seed/尺寸/模型名等），`image_inputs` 是要传
+图的槽位，`notes` 是模板作者写的官方说明。**只改 surface 暴露的东西**，
+subgraph 内部改了也不会生效。
+
+**第 5 步：改参数并提交。** `GET /comfy/workflow/graph/<file>` 拿原文 →
+按 surface 的指引改值 → `POST /comfy/workflow/graph/submit`（要传图就用
+multipart 的 `image` 字段，服务端返回 `disk_name`，填进对应 `image_inputs`）。
+
+**第 6 步：轮询与取图。** `GET /comfy/workflow/jobs?job_id=...` 每 2-3 秒查
+一次；`completed` 后 `GET /comfy/workflow/result?job_id=...` 下载 PNG。
+
+常见操作速记：删任务 `DELETE /jobs/<id>`；彻底清产物 `POST /purge`；
+服务端参数含义不确定时回第 2 步重读文档。
+
+## 把本服务封装成 Codex Skill
+
+如果你在 Codex / Claude Code 这类支持 Skills 的环境里长期使用本服务，建议把
+上面的流程沉淀成一个 Skill，让任何新会话零配置上手：
+
+**目录结构**（放在 `~/.codex/skills/comfy-image/` 或项目 `.codex/skills/`）：
+
+```
+comfy-image/
+└── SKILL.md          # 唯一必需文件
+```
+
+**SKILL.md 模板**（复制后把 `BASE`/`KEY` 换成实际值）：
+
+```markdown
+---
+name: comfy-image
+description: 通过 SHTUCodeProxy 的 ComfyUI Workflow 插件生成/编辑图片。
+  当用户要求文生图、图生图、背景去除，或提到 ComfyUI/Qwen-Image 时使用。
+---
+
+# ComfyUI 图片生成
+
+## 连接
+- BASE: https://服务器IP:8090   (自签证书加 curl -k)
+- AUTH: Authorization: Bearer <auth_key>
+
+## 标准流程 (surface-first, 严格按序)
+1. GET  $BASE/comfy/workflow/workflows                  # 列模板, 看 description 选
+2. GET  $BASE/comfy/workflow/workflows/<file>/surface   # 拿可编辑面
+3. 只改 surface 的 params/image_inputs; subgraph 内部改了无效
+4. GET  $BASE/comfy/workflow/graph/<file>               # 拿原文
+5. POST $BASE/comfy/workflow/graph/submit               # multipart: graph 字段
+   (要传图: 追加 image 字段, 用响应里的 disk_name 填 LoadImage)
+6. GET  $BASE/comfy/workflow/jobs?job_id=...            # 2-3 秒一次
+7. GET  $BASE/comfy/workflow/result?job_id=...          # completed 后下载
+
+## 硬性规则
+- 不确定接口细节时先 GET /comfy/workflow/docs 重读文档, 不猜路由
+- 编辑只走 surface; 已知模板的 subgraph 会被服务端锁定覆盖
+- prompt 上限 8000 字符; 单任务上传 ≤50MB
+- 任务结束后 uploads 自动清理; 产物副本在 data_root/outputs/
+```
+
+**要点**：`description` 字段决定 Agent 何时自动触发这个 Skill，要写清楚触发
+场景；流程写「标准路径」即可，异常处理让 Agent 现场查 docs。装好后新会话
+直接说「帮我生成一张图」就会走这套流程，无需再贴任何文档。

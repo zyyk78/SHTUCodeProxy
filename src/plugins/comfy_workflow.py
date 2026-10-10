@@ -368,15 +368,6 @@ class Worker:
                         pass
                 with self.lock: self.current = None
 
-    def _watchdog_log(self, msg: str) -> None:
-        """看门狗动作落到 LOG_DIR/watchdog.log，便于事后核查卸载历史。"""
-        try:
-            LOG_DIR.mkdir(parents=True, exist_ok=True)
-            with (LOG_DIR / "watchdog.log").open("a", encoding="utf-8") as f:
-                f.write(f"{datetime.now().isoformat(timespec='seconds')} {msg}\n")
-        except Exception:
-            pass
-
     def _maybe_unload_vram(self, idle_s: float) -> bool:
         """空闲超阈值时请求 ComfyUI 卸载模型。
 
@@ -405,8 +396,6 @@ class Worker:
             if not need_free:
                 return False
             if self._post_free(unload_models=True, free_memory=True):
-                self._watchdog_log(f"armed: idle {int(idle_s)}s >= {idle_s_cfg}s, "
-                                   f"used >= {threshold_gb}GB (卸载将在下个任务结束后生效)")
                 return True
             return False
         except Exception:
@@ -414,8 +403,7 @@ class Worker:
 
     def _cancel_unload(self) -> None:
         """撤销已挂上的卸载 flag: 再设一次 false 覆盖 sticky 值。"""
-        if self._post_free(unload_models=False, free_memory=False):
-            self._watchdog_log("cancelled: 任务在卸载生效前到来, 撤销 unload flag")
+        self._post_free(unload_models=False, free_memory=False)
 
     def _post_free(self, unload_models: bool, free_memory: bool) -> bool:
         try:
@@ -1498,13 +1486,6 @@ class ComfyPurge(RoutePlugin):
         result = {"purged": len(shredded), "files": shredded}
         if failed:
             result["failed"] = failed
-        try:
-            LOG_DIR.mkdir(parents=True, exist_ok=True)
-            with (LOG_DIR / "watchdog.log").open("a", encoding="utf-8") as f:
-                f.write(f"{datetime.now().isoformat(timespec='seconds')} purge: "
-                        f"job={job_id or 'ALL'} purged={len(shredded)} failed={len(failed)}\n")
-        except Exception:
-            pass
         send_json(handler, 200, result)
         return True
 
