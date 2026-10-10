@@ -423,3 +423,22 @@ file result.png
 | 删除任务 | `DELETE /comfy/workflow/jobs/<job_id>` |
 | 插件/后端状态 | `GET /comfy/workflow/health`（免 key） |
 | **接口文档全文** | `GET /comfy/workflow/docs`（`?format=json` 返回端点清单摘要；agent 自查用，无需本地保存） |
+
+## VRAM 空闲看门狗
+
+ComfyUI 会把模型常驻显存（单卡可到 ~13GB）加速连续生成；共享服务器上长时间不生成时这是白占。插件内置空闲看门狗，三个条件同时满足才卸载：
+
+1. 队列空闲（没有正在跑/排队的任务）
+2. 空闲时长 ≥ `vram_unload_idle_s`（秒，默认 0 = 关闭）
+3. 任一卡占用 ≥ `vram_unload_used_gb`（GB，默认 8）
+
+触发时插件调 ComfyUI `POST /free {"unload_models":true,"free_memory":true}`，卸载历史记录在 `data_root/logs/watchdog.log`。下一次生成时 ComfyUI 会自动重新加载模型（首次会慢几十秒），无需人工干预。
+
+在 `config.json` 的 `plugins[].options` 里配置：
+
+```json
+"vram_unload_idle_s": 1800,
+"vram_unload_used_gb": 8
+```
+
+上例表示：空闲 30 分钟且某卡占用 ≥8GB 时自动卸载。设 `vram_unload_idle_s: 0` 关闭看门狗。

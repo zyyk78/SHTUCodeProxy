@@ -64,6 +64,12 @@ class Settings:
         # workflow 模式限制（防止超大/恶意 workflow 与存储爆炸）
         self.workflow_max_bytes = _to_int(opts.get("workflow_max_kb"), os.environ.get("COMFY_WORKFLOW_MAX_KB"), 256) * 1024
         self.workflow_max_nodes = _to_int(opts.get("workflow_max_nodes"), os.environ.get("COMFY_WORKFLOW_MAX_NODES"), 200)
+        # VRAM 空闲看门狗: ComfyUI 保留已加载模型常驻显存, 长时间不生成时
+        # 白占 ~13GB/卡。空闲超过 vram_unload_idle_s 且占用超过
+        # vram_unload_used_gb 时, 调 ComfyUI /free 卸载模型。
+        # 0 = 关闭看门狗 (默认关, 避免和人工使用 ComfyUI 的人抢显存)。
+        self.vram_unload_idle_s = _to_int(opts.get("vram_unload_idle_s"), os.environ.get("COMFY_WORKFLOW_VRAM_UNLOAD_IDLE_S"), 0)
+        self.vram_unload_used_gb = _to_int(opts.get("vram_unload_used_gb"), os.environ.get("COMFY_WORKFLOW_VRAM_UNLOAD_USED_GB"), 8)
         # 输出生命周期
         self.output_retention_hours = _to_int(opts.get("output_retention_hours"), os.environ.get("COMFY_WORKFLOW_OUTPUT_RETENTION_HOURS"), 24)
         self.output_max_files = _to_int(opts.get("output_max_files"), os.environ.get("COMFY_WORKFLOW_OUTPUT_MAX_FILES"), 200)
@@ -209,8 +215,15 @@ class Worker:
             self.thread.start()
 
     def run(self):
+        last_busy = time.monotonic()
         while True:
-            job = self.q.get()
+            try:
+                job = self.q.get(timeout=5)
+            except queue.Empty:
+                # 空闲分支: 到点检查是否该卸载显存。队列有活干时绝不卸。
+                self._maybe_unload_vram(time.monotonic() - last_busy)
+                continue
+            last_busy = time.monotonic()
             with self.lock:
                 self.history[job.id] = job
                 self.current = job
@@ -330,6 +343,52 @@ class Worker:
                     except Exception:
                         pass
                 with self.lock: self.current = None
+
+    def _watchdog_log(self, msg: str) -> None:
+        """看门狗动作落到 LOG_DIR/watchdog.log，便于事后核查卸载历史。"""
+        try:
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            with (LOG_DIR / "watchdog.log").open("a", encoding="utf-8") as f:
+                f.write(f"{datetime.now().isoformat(timespec='seconds')} {msg}\n")
+        except Exception:
+            pass
+
+    def _maybe_unload_vram(self, idle_s: float) -> None:
+        """空闲超阈值时调 ComfyUI /free 卸载模型, 释放显存。
+
+        WHY: ComfyUI 把模型常驻显存加速连续生成; 共享 4090 上夜间不生成时
+        ~13GB/卡白占着。这里只在「队列空 + 空闲够久 + 占用够高」时卸载,
+        三个条件缺一不可, 避免和正在用 ComfyUI 的人打架。
+        任何失败都静默 (ComfyUI 没开/版本不支持 /free 时不应刷错误日志)。
+        """
+        idle_s_cfg = SETTINGS.vram_unload_idle_s
+        if idle_s_cfg <= 0 or idle_s < idle_s_cfg:
+            return
+        with self.lock:
+            if self.current is not None or not self.q.empty():
+                return  # 双保险: 判定瞬间来了活就不卸
+        try:
+            with urllib.request.urlopen(f"{SETTINGS.comfy_url}/system_stats", timeout=10) as r:
+                stats = json.loads(r.read())
+            threshold_gb = SETTINGS.vram_unload_used_gb
+            need_free = False
+            for dev in stats.get("devices") or []:
+                total = dev.get("vram_total") or 0
+                free = dev.get("vram_free") or 0
+                if total and (total - free) / (1024 ** 3) >= threshold_gb:
+                    need_free = True; break
+            if not need_free:
+                return
+            req = urllib.request.Request(
+                f"{SETTINGS.comfy_url}/free",
+                data=json.dumps({"unload_models": True, "free_memory": True}).encode(),
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30):
+                _watchdog_log(f"unloaded: idle {int(idle_s)}s >= {idle_s_cfg}s, "
+                              f"used >= {threshold_gb}GB")
+        except Exception:
+            pass  # 看门狗失败静默: 不影响主流程
 
 
 worker = Worker(start=bool(os.environ.get("COMFY_WORKFLOW_PLUGIN_AUTOSTART", "1") not in ("0", "false", "no", "off")))
