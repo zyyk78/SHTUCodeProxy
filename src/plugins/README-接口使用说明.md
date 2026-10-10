@@ -54,6 +54,10 @@ PY
 
 注意：图片内容本身不做 magic-number 校验，但改成 `.png` 后缀的非图片文件会在 ComfyUI 执行时报错并回传到 `/jobs`。
 
+**agent 自举提示**：你在读的这份文档本身可以通过接口获取 —— `GET /comfy/workflow/docs`
+返回全文（`?format=json` 返回端点清单摘要）。新会话不确定接口细节时，先调它，
+不要依赖记忆或猜测路由。
+
 ## 1. 查询模板列表
 
 ```bash
@@ -82,7 +86,7 @@ curl -sk -H "$AUTH" "$BASE/comfy/workflow/workflows"
 ```
 
 - `file`：磁盘上的实际文件名，也是后续取模板用的 id（带不带 `.json` 都行）
-- `description`：该 workflow JSON **自身**顶层 `"description"` 字段；没有就是 `null`，想显示就在保存 workflow 文件时加一个
+- `description`：取值顺序 —— ① workflow JSON 顶层 `"description"` 字段（显式声明优先）；② 模板自带 MarkdownNote/Note 的用法说明摘要（优先取标题含 "Usage" 的 note，跳过导航链接行，180 字符截断）。两者都没有才是 `null`。**agent 选模板时看这一步就够了**，不必逐个拉 surface
 - 非法 JSON 文件会列出并标 `"error": "invalid json"`
 - 每次请求都重新扫盘，新保存的文件下次请求立即可见，无需重启
 
@@ -470,3 +474,34 @@ ComfyUI 会把模型常驻显存（单卡可到 ~13GB）加速连续生成；共
 ```
 
 上例表示：空闲 30 分钟且某卡占用 ≥8GB 时自动卸载。设 `vram_unload_idle_s: 0` 关闭看门狗。
+
+## 换模型与加 LoRA
+
+模型文件目录（`extra_model_paths.yaml` 指向的 `models/` 树）由 ComfyUI **自动发现**——新 `.safetensors` 丢进对应目录后，loader 节点的下拉选项立即包含它，无需重启。但**自动发现 ≠ 自动应用**：workflow 里 `UNETLoader.unet_name` 等引用是写死的，不改编译不换模型。
+
+**换模型**（两种等价方式）：
+
+1. 改模板：在 ComfyUI 里打开模板 → 换 loader 的模型名 → 重新导出到 `workflows_dir`，之后所有调用都用新模型
+2. 提交时换：surface 里 `unet_name` / `clip_name` / `vae_name` 是 COMBO 参数，提交前在 graph 里改成新文件名即可 —— 同一模板可跑不同模型
+
+**加 LoRA**：`models/loras/` 丢入 `.safetensors` 后，任何带 `LoraLoader` 节点的模板即可在 surface 里直接编辑 `lora_name` / `strength_model` / `strength_clip`。当前内置的三个 Qwen-Image 模板原生不带 LoRA 节点——需要的话在 ComfyUI 里加一个 `LoraLoader`（model/clip 串在 UNetLoader/CLIPLoader 之后）再导出模板即可，`workflows_dir` 放进去就会被 surface 自动识别，不需要改插件代码。
+
+**多卡说明**：ComfyUI 是单设备调度（`get_torch_device()` 固定 `cuda:0`），不会自动均衡双卡。要利用第二张卡，跑第二个 ComfyUI 实例（`CUDA_VISIBLE_DEVICES=1`，不同端口）并在插件里按需路由，是最小改动路径。
+
+## options 配置项汇总
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `comfy_url` | `http://127.0.0.1:8188` | ComfyUI 地址（仅本机回环，由插件对外转发） |
+| `workflows_dir` | （必填） | 模板目录，新模板放入即被 surface 识别 |
+| `comfy_output_root` | （必填） | ComfyUI 的 output 目录，插件从这里取产物 |
+| `comfy_input_dir` | （可选） | ComfyUI 的 input 目录，上传图复制到这里 |
+| `data_root` | `~/.local/share/comfy-workflow-api` | 插件副本/日志根目录（**建议放持久盘，`/tmp` 重启即清空**） |
+| `managed_output_subdir` | （空 = 关闭） | 插件产物隔离子目录，见「产物存放在哪里」 |
+| `prompt_max` | 8000 | prompt 长度上限 |
+| `upload_max_mb` | 50 | 单任务上传总量上限 |
+| `workflow_max_kb` / `workflow_max_nodes` | 256 / 200 | 提交 graph 的大小/节点数上限 |
+| `max_wait` | 600 | 单任务最长等待秒数 |
+| `output_retention_hours` / `output_max_files` | 24 / 200 | 副本生命周期（惰性清理） |
+| `vram_unload_idle_s` / `vram_unload_used_gb` | 0（关）/ 8 | VRAM 看门狗，见上文 |
+| `cleanup_interval_s` | 300 | 清理线程间隔
