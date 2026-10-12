@@ -458,7 +458,29 @@ purge/DELETE 清的是**副本**；原件在 managed 子目录里按日期滚动
 
 ## VRAM 空闲看门狗
 
-ComfyUI 会把模型常驻显存（单卡可到 ~13GB）加速连续生成；共享服务器上长时间不生成时这是白占。插件内置空闲看门狗，三个条件同时满足才卸载：
+ComfyUI 会把模型常驻显存（单卡可到 ~13GB）加速连续生成；共享服务器上长时间不生成时这是白占。有两层看门狗可用：**ComfyUI 进程内节点**（推荐）和**代理插件内置看门狗**。两者的判定条件相同，但生效机制不同。
+
+### 推荐方案：ComfyUI 进程内节点（`idle_vram_guard.py`）
+
+已部署到 `/opt/comfy/ComfyUI/custom_nodes/idle_vram_guard.py`。它在 ComfyUI 进程内部运行，直接读取全局 PromptQueue（天然感知网页版提交的任务），触发时直接调用 ComfyUI 内部 API 卸载模型并清缓存，**立即生效**——不像 HTTP `/free` 那样要等下个任务结束。
+
+通过环境变量配置（可在 `comfy-start.sh` 里 `export` 或在 systemd unit 里 `Environment=`）：
+
+```bash
+export COMFY_IDLE_VRAM_GUARD_IDLE_S=1800     # 空闲秒数阈值，默认 1800（30 分钟）
+export COMFY_IDLE_VRAM_GUARD_USED_GB=8       # 任一卡显存 GB 阈值，默认 8
+export COMFY_IDLE_VRAM_GUARD_INTERVAL_S=30   # 检查间隔秒数，默认 30
+```
+
+设 `COMFY_IDLE_VRAM_GUARD_IDLE_S=0` 可禁用本节点（不启动看门狗线程）。
+
+ComfyUI 日志里可看到 `[idle_vram_guard]` 前缀的启动信息和卸载记录。画布上还可添加 `Idle VRAM Guard Status` 节点（utils/system 分类）实时查看当前空闲时长和累计卸载次数。
+
+**启用本节点后，建议把代理插件侧的 `vram_unload_idle_s` 设为 `0`（关闭），由本节点接管，避免两套看门狗互相干扰。**
+
+### 备用方案：代理插件内置看门狗
+
+如果不想改 ComfyUI 启动脚本，也可以只用插件侧的看门狗（默认行为）。插件空闲看门狗三个条件同时满足才触发：
 
 1. 队列空闲（没有正在跑/排队的任务）
 2. 空闲时长 ≥ `vram_unload_idle_s`（秒，默认 0 = 关闭）
@@ -530,6 +552,51 @@ ComfyUI 的默认行为（不加任何启动参数）就是「尽量利用显存
 | `output_retention_hours` / `output_max_files` | 24 / 200 | 副本生命周期（惰性清理） |
 | `vram_unload_idle_s` / `vram_unload_used_gb` | 0（关）/ 8 | VRAM 看门狗，见上文 |
 | `cleanup_interval_s` | 300 | 清理线程间隔
+
+### 更优方案：ComfyUI 内部看门狗节点（idle_vram_guard）
+
+插件的 HTTP 看门狗依赖 ComfyUI 的 sticky `/free` 机制，卸载延迟到「下个任务结束」且不感知 ComfyUI 网页端提交的任务。**推荐改用 ComfyUI 自定义节点 `idle_vram_guard.py`**（已安装在 `/opt/comfy/ComfyUI/custom_nodes/`），它运行在 ComfyUI 进程内部，直接调用 ComfyUI 自己的模型管理 API，无需 HTTP 环回、立即生效、且天然感知所有来源的任务（网页版 / API / 代理转发）。
+
+启用后建议把插件侧看门狗关掉（`vram_unload_idle_s: 0`），避免双看门狗重复触发。
+
+#### 工作原理
+
+1. 启动时开一个后台 daemon 线程，每 30 秒检查一次
+2. 读取 `PromptQueue.get_tasks_remaining()`（= 排队中 + 正在跑），非 0 视为有活动，重置空闲计时
+3. 空闲时长 ≥ 阈值 **且** 任一 CUDA 卡显存占用 ≥ 阈值 → 调 `comfy.model_management.unload_all_models()` + `soft_empty_cache()` 立即卸载
+4. 卸载动作与 ComfyUI 工具栏「Free model and node cache」按钮完全等价，模型下次需要时自动重新加载
+
+#### 配置（环境变量）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `COMFY_IDLE_VRAM_GUARD_IDLE_S` | `1800` | 空闲秒数阈值，`0` = 禁用看门狗 |
+| `COMFY_IDLE_VRAM_GUARD_USED_GB` | `8` | 显存占用 GB 阈值（任一卡） |
+| `COMFY_IDLE_VRAM_GUARD_INTERVAL_S` | `30` | 检查间隔秒数 |
+
+在 ComfyUI 的 systemd 启动脚本（`/mnt/HDD1/llm/comfy/scripts/comfy-start.sh`）里加一行即可：
+
+```bash
+export COMFY_IDLE_VRAM_GUARD_IDLE_S=1800
+```
+
+改完 `sudo systemctl restart comfyui` 生效。ComfyUI 日志会打印
+`[idle_vram_guard] started: idle_s=1800 used_gb=8 interval_s=30` 确认加载成功。
+
+#### 状态查看
+
+ComfyUI 画布上有一个 `Idle VRAM Guard Status` 节点（分类 `utils/system`），把它拖到工作流里执行即可在输出框看到 `enabled / idle_threshold / current_idle / unload_count` 等运行时状态，不需要额外日志工具。
+
+#### 与插件侧看门狗的取舍
+
+| | 插件 HTTP 看门狗 | `idle_vram_guard` 节点（推荐） |
+|---|---|---|
+| 生效时机 | sticky `/free`，延迟到下个任务结束 | 立即卸载 |
+| 网页版任务感知 | ❌ 不感知 | ✅ 同一进程，天然感知 |
+| 配置位置 | SHTUProxy `config.json` | ComfyUI 启动脚本环境变量 |
+| 状态可视化 | 无（日志被砍） | 画布上的 Status 节点 |
+
+两套机制不冲突（插件侧关掉即可），推荐只用节点方案。
 
 ## 写给全新 Agent：五分钟上手
 
