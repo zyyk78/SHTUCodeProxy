@@ -468,7 +468,6 @@ ComfyUI 会把模型常驻显存（单卡可到 ~13GB）加速连续生成；共
 
 ```bash
 export COMFY_IDLE_VRAM_GUARD_IDLE_S=1800     # 空闲秒数阈值，默认 1800（30 分钟）
-export COMFY_IDLE_VRAM_GUARD_USED_GB=8       # 任一卡显存 GB 阈值，默认 8
 export COMFY_IDLE_VRAM_GUARD_INTERVAL_S=30   # 检查间隔秒数，默认 30
 ```
 
@@ -571,7 +570,6 @@ ComfyUI 的默认行为（不加任何启动参数）就是「尽量利用显存
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `COMFY_IDLE_VRAM_GUARD_IDLE_S` | `1800` | 空闲秒数阈值，`0` = 禁用看门狗 |
-| `COMFY_IDLE_VRAM_GUARD_USED_GB` | `8` | 显存占用 GB 阈值（任一卡） |
 | `COMFY_IDLE_VRAM_GUARD_INTERVAL_S` | `30` | 检查间隔秒数 |
 
 在 ComfyUI 的 systemd 启动脚本（`/mnt/HDD1/llm/comfy/scripts/comfy-start.sh`）里加一行即可：
@@ -581,7 +579,7 @@ export COMFY_IDLE_VRAM_GUARD_IDLE_S=1800
 ```
 
 改完 `sudo systemctl restart comfyui` 生效。ComfyUI 日志会打印
-`[idle_vram_guard] started: idle_s=1800 used_gb=8 interval_s=30` 确认加载成功。
+`[idle_vram_guard] started: idle_s=1800 interval_s=30` 确认加载成功。
 
 #### 状态查看
 

@@ -1,8 +1,12 @@
 # idle_vram_guard.py — ComfyUI 空闲显存看门狗
 #
-# 功能: 队列空 + 空闲超过阈值 + 显存占用超过阈值 → 直接卸载全部模型并清缓存。
+# 功能: 队列空 + 空闲超过阈值 → 直接卸载全部模型并清缓存。
 # 解决的问题: ComfyUI 自身的 sticky /free flag 只在「下个任务结束后」才生效,
 #              如果一直没新任务, 模型就永远驻留在显存里白占资源。
+#
+# 触发逻辑: 每个空闲周期只卸载一次。空闲到点 → 卸载并置 armed=True,
+#           直到有新任务到来才重置 armed=False。空卡重复卸载是无害的
+#           空操作, 但没必要每 30 秒打一遍日志, 所以用 armed 防重复。
 #
 # 与 SHTUProxy 插件侧看门狗的关系:
 #   两者语义相同, 但本节点在 ComfyUI 进程内直接调用内部 API, 立即生效,
@@ -11,7 +15,6 @@
 #
 # 配置 (环境变量):
 #   COMFY_IDLE_VRAM_GUARD_IDLE_S      空闲秒数阈值, 默认 1800 (30 分钟)
-#   COMFY_IDLE_VRAM_GUARD_USED_GB     显存占用 GB 阈值 (任一卡), 默认 8
 #   COMFY_IDLE_VRAM_GUARD_INTERVAL_S  检查间隔秒数, 默认 30
 #   设 COMFY_IDLE_VRAM_GUARD_IDLE_S=0 可禁用本节点 (不启动看门狗线程)。
 #
@@ -34,7 +37,6 @@ def _env_int(name: str, default: int) -> int:
 
 
 IDLE_S = _env_int("COMFY_IDLE_VRAM_GUARD_IDLE_S", 1800)
-USED_GB = _env_int("COMFY_IDLE_VRAM_GUARD_USED_GB", 8)
 INTERVAL_S = _env_int("COMFY_IDLE_VRAM_GUARD_INTERVAL_S", 30)
 
 # 运行时状态, 供 Status 节点和外部诊断读取
@@ -43,6 +45,7 @@ _state = {
     "last_busy": None,        # 最近一次队列非空的 time.time()
     "last_unload": None,      # 最近一次成功卸载的 time.time()
     "unload_count": 0,
+    "armed": False,           # 当前空闲周期是否已卸载过
     "enabled": IDLE_S > 0,
 }
 
@@ -63,7 +66,7 @@ def _get_queue_remaining() -> int:
 
 
 def _get_vram_used_gb() -> float:
-    """返回任一可见 CUDA 设备的最大已分配显存 (GB)。"""
+    """返回任一可见 CUDA 设备的最大已分配显存 (GB), 仅用于日志诊断。"""
     max_gb = 0.0
     for i in range(torch.cuda.device_count()):
         try:
@@ -84,8 +87,7 @@ def _do_unload():
 
 def _watchdog_loop():
     logging.info(
-        f"[idle_vram_guard] started: idle_s={IDLE_S} used_gb={USED_GB} "
-        f"interval_s={INTERVAL_S}"
+        f"[idle_vram_guard] started: idle_s={IDLE_S} interval_s={INTERVAL_S}"
     )
     while True:
         time.sleep(INTERVAL_S)
@@ -97,8 +99,9 @@ def _watchdog_loop():
             # PromptServer 不可用 (罕见), 跳过本轮
             continue
         if remaining > 0:
-            # 有任务在跑或排队 → 重置空闲计时
+            # 有任务在跑或排队 → 重置空闲计时, 撤销 armed
             _state["last_busy"] = now
+            _state["armed"] = False
             continue
 
         # 队列空: 计算空闲时长
@@ -111,18 +114,18 @@ def _watchdog_loop():
         if idle < IDLE_S:
             continue
 
-        vram_gb = _get_vram_used_gb()
-        if vram_gb < USED_GB:
-            # 显存本来就空, 无需卸载
+        # 空闲到点且本周期未卸载过 → 执行
+        if _state["armed"]:
             continue
-
         try:
+            vram_gb = _get_vram_used_gb()
             _do_unload()
             _state["last_unload"] = now
             _state["unload_count"] += 1
+            _state["armed"] = True
             logging.info(
                 f"[idle_vram_guard] unloaded models: idle={idle:.0f}s "
-                f"vram={vram_gb:.1f}GB -> 释放完成"
+                f"vram_before={vram_gb:.1f}GB"
             )
         except Exception as e:
             logging.warning(f"[idle_vram_guard] unload failed: {e}")
@@ -156,8 +159,8 @@ class IdleVRAMGuardStatus:
         lines = [
             f"enabled={_state['enabled']}",
             f"idle_threshold={IDLE_S}s",
-            f"vram_threshold={USED_GB}GB",
             f"current_idle={idle}",
+            f"armed={_state['armed']}",
             f"unload_count={_state['unload_count']}",
         ]
         return (" | ".join(lines),)
