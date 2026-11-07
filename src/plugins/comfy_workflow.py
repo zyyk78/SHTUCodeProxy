@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import copy
 import hashlib
+import logging
 import os
 import queue
 import shutil
@@ -337,7 +338,7 @@ class Worker:
                 comfy_out_root = getattr(SETTINGS, "output_root", None)
                 if not comfy_out_root:
                     raise RuntimeError("comfy_output_root not configured in plugins[].options")
-                src = os.path.join(comfy_out_root, rel)
+                src = Path(comfy_out_root) / rel
                 if not os.path.isfile(src):
                     raise RuntimeError(f"output not found: {src}")
                 src_mtime = os.path.getmtime(src)
@@ -347,6 +348,50 @@ class Worker:
                         f"(output mtime={src_mtime:.3f}, submitted={submitted_ts:.3f})"
                     )
                 shutil.copy2(src, out_path)
+                # WHY: API 产物只保留插件工作副本 (plugin-data/outputs/<job_id>.png),
+                # ComfyUI 原始输出 (output/api-web/...) 在复制成功后立即删除。
+                # 只有 managed_output_subdir 生效时才删, 且仅删本任务对应文件,
+                # 确保 WebUI 直接生成在 output 根目录的图片不受影响。
+                managed = getattr(SETTINGS, "managed_output_subdir", "")
+                # WHY: 清理步骤是"锦上添花"的可选动作 (删 ComfyUI 原始输出 +
+                # 清 ComfyUI 历史)。它们失败时绝不能影响任务结果 ——
+                # 图片已经复制成功, 若异常冒泡到外层 except Exception, 就会把
+                # 已完成的任务翻成 failed。所以整段包在独立 try 里, 任何
+                # 异常 (含 NameError 等非 OSError) 都只记 warning。
+                try:
+                    # WHY: 只删 managed 子目录内的文件，防止 rewrite 意外失效时
+                    # 误删 WebUI 直接生成在 output 根目录的图。
+                    if managed and rel.replace("\\", "/").startswith(managed + "/"):
+                        try:
+                            src.unlink()
+                        except OSError as unlink_err:
+                            logging.warning(
+                                "[comfy_workflow] copied output but failed to remove "
+                                f"ComfyUI original {src}: {unlink_err}"
+                            )
+                    # WHY: API 生成不进入 ComfyUI 全局历史。ComfyUI 的 POST /history
+                    # 接口接受 {"delete": [prompt_id]}，清掉后 Web 端历史面板看不到
+                    # 这些任务，也不会留下指向已删除原件的坏缩略图。
+                    try:
+                        hist_req = urllib.request.Request(
+                            f"{comfy_url}/history",
+                            data=json.dumps({"delete": [prompt_id]}).encode(),
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        )
+                        urllib.request.urlopen(hist_req, timeout=10)
+                    except Exception as hist_err:
+                        logging.warning(
+                            f"[comfy_workflow] failed to clear ComfyUI history "
+                            f"{prompt_id}: {hist_err}"
+                        )
+                except Exception as cleanup_err:
+                    # WHY: 兜底: 清理逻辑自身若抛异常 (如 logging 不可用),
+                    # 也只记一行, 绝不改变任务结果。
+                    logging.warning(
+                        f"[comfy_workflow] post-copy cleanup skipped for "
+                        f"{prompt_id}: {cleanup_err}"
+                    )
                 job.output = out_path
                 job.status = "completed"
                 job.returncode = 0

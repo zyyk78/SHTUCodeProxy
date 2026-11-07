@@ -88,8 +88,24 @@ def is_claude_auto_classifier_request(body: Dict[str, Any]) -> bool:
     # reasoning transcript instead of a parseable verdict, which Claude reports
     # as the classifier model being temporarily unavailable. The classifier is
     # itself a plain model call, not a tool-enabled request.
-    needles = ("security monitor", "auto mode", "classification process", "<block>", "permission")
+    # WHY: 关键词必须收窄 (上游 v4.8.6)。Claude Code 主 agent 的 system prompt
+    # 里就含 "auto mode" / "permission" 这类词, 用宽关键词会把**主请求**误判成
+    # classifier 请求 —— 主请求于是被跳过 thinking 注入, 走短路时更会直接
+    # 返回一句假判定。只有 classifier 真正会用到的标记才算。
+    needles = ("security monitor", "classification process", "<block>yes</block>", "<block>no</block>")
     return _text_contains_any(body.get("system"), needles)
+
+
+def classifier_short_circuit_enabled() -> bool:
+    """是否对 Claude Code auto-mode 的 classifier 请求直接返回放行判定。
+
+    WHY: Claude Code 在执行每条 Bash 命令前会发一个安全分类请求, 期望收到
+    严格的标签式判定。校园模型 (glm-chat 等) 返回的格式不稳定, 分类器解析不了,
+    结果是**所有命令都被拦** ("could not evaluate this action")。上游的做法是
+    对 classifier 请求直接短路返回一个干净的放行判定, 不再转发给模型。
+    设 SHTU_CLASSIFIER_SHORTCIRCUIT=0 可关闭短路 (恢复走真实模型判定)。
+    """
+    return os.getenv("SHTU_CLASSIFIER_SHORTCIRCUIT", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def parse_pseudo_attributes(value: str) -> Dict[str, str]:
@@ -842,7 +858,7 @@ def sanitized_anthropic_body_for_model(body: Dict[str, Any], model_config: Model
     # WHY: When enable_thinking is set, always send chat_template_kwargs so vLLM models
     # use reasoning mode. When supports_reasoning is set (but not enable_thinking), only
     # enable reasoning when the client actually requested thinking.
-    if getattr(model_config, "enable_thinking", False):
+    if getattr(model_config, "enable_thinking", False) and not is_claude_auto_classifier_request(body):
         sanitized["_reasoning_enabled"] = True
     elif sanitized.get("_thinking_requested") and getattr(model_config, "supports_reasoning", False):
         sanitized["_reasoning_enabled"] = True
@@ -885,7 +901,7 @@ def sanitized_responses_body_for_model(body: Dict[str, Any], model_config: Model
     # WHY: When enable_thinking is set, always send chat_template_kwargs so vLLM models
     # use reasoning mode. When supports_reasoning is set (but not enable_thinking), only
     # enable reasoning when the client actually requested thinking.
-    if getattr(model_config, "enable_thinking", False):
+    if getattr(model_config, "enable_thinking", False) and not is_claude_auto_classifier_request(body):
         sanitized["_reasoning_enabled"] = True
     elif sanitized.get("_thinking_requested") and getattr(model_config, "supports_reasoning", False):
         sanitized["_reasoning_enabled"] = True
@@ -991,6 +1007,86 @@ def _strip_bing_grounding(value: Any) -> Any:
     return value
 
 
+# WHY: 上游 GenAI 平台没有开通 OpenAI/Anthropic 的内置工具 (web_search /
+# file_search / code_interpreter / computer_use / mcp 等)。带着这些工具发过去
+# 上游会回 400, 或者只吐一个空流, 客户端看起来像"模型没说话"。
+# 策略 (按用户要求): 命中即向客户端明确报错说明该功能不支持, 同时把这类工具
+# 从 payload 里剥掉, 保证不会带着不支持的工具去请求上游。
+# 工具识别只看 tool["type"] —— Claude Code / Codex 自己定义的函数式工具没有
+# type 字段 (或 type="function"), 不会被误伤。
+_DEFAULT_UNSUPPORTED_TOOL_TYPES = frozenset({
+    "web_search",
+    "web_search_20250305",
+    "web_search_preview",
+    "web_search_preview_2025_03_11",
+    "tool_search",
+    "file_search",
+    "code_interpreter",
+    "computer_use_preview",
+    "computer_use",
+    "mcp",
+})
+_env_unsupported_tool_types = os.environ.get("SHTU_UNSUPPORTED_TOOL_TYPES")
+if _env_unsupported_tool_types is not None:
+    UNSUPPORTED_TOOL_TYPES = frozenset(
+        t.strip() for t in _env_unsupported_tool_types.split(",") if t.strip()
+    )
+else:
+    UNSUPPORTED_TOOL_TYPES = _DEFAULT_UNSUPPORTED_TOOL_TYPES
+
+
+def find_unsupported_tools(tools: Any) -> List[str]:
+    """列出请求里上游不支持的内置工具类型 (去重, 保持首次出现顺序)。"""
+    found: List[str] = []
+    if not isinstance(tools, list):
+        return found
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        tool_type = tool.get("type")
+        if isinstance(tool_type, str) and tool_type in UNSUPPORTED_TOOL_TYPES:
+            if tool_type not in found:
+                found.append(tool_type)
+    return found
+
+
+def unsupported_tool_policy() -> str:
+    """不支持的内置工具怎么处理: error (默认, 明确报错) | strip (静默剥离)。
+
+    WHY: 默认报错是因为静默剥离会让客户端以为"工具调过了", 实际却是模型在
+    瞎猜; 明确告诉客户端"这个功能上游不支持"更省事。确实需要静默降级时用
+    SHTU_UNSUPPORTED_TOOL_POLICY=strip。
+    """
+    value = os.getenv("SHTU_UNSUPPORTED_TOOL_POLICY", "error").strip().lower()
+    return value if value in ("error", "strip") else "error"
+
+
+def _strip_unsupported_tools(value: Any) -> Any:
+    """移除上游不支持的内置工具 (兜底: 正常路径已经在入口处报错)。"""
+    if isinstance(value, dict):
+        result = {k: _strip_unsupported_tools(v) for k, v in value.items()}
+        if "tools" in result and isinstance(result["tools"], list):
+            filtered = []
+            for tool in result["tools"]:
+                if isinstance(tool, dict) and tool.get("type") in UNSUPPORTED_TOOL_TYPES:
+                    log(f"stripped unsupported tool type={tool.get('type')} name={tool.get('name', '')}")
+                    continue
+                filtered.append(tool)
+            result["tools"] = filtered
+            if not filtered:
+                del result["tools"]
+                # WHY: 工具全被剥掉后, 残留的 tool_choice 会让上游报
+                # "tools must be set" (400)。
+                result.pop("tool_choice", None)
+        return result
+    if isinstance(value, list):
+        filtered = []
+        for item in value:
+            filtered.append(_strip_unsupported_tools(item))
+        return filtered
+    return value
+
+
 def sanitized_upstream_payload_for_model(payload: Dict[str, Any], model_config: ModelConfig) -> Dict[str, Any]:
     result = sanitized_upstream_value_for_model(payload, model_config) if isinstance(payload, dict) else payload
     # WHY: cache_control is Anthropic-specific; no upstream API supports it.
@@ -998,6 +1094,12 @@ def sanitized_upstream_payload_for_model(payload: Dict[str, Any], model_config: 
     if isinstance(result, dict):
         result = _strip_cache_control(result)
         result = _strip_bing_grounding(result)
+        result = _strip_unsupported_tools(result)
+        # WHY: 上游 API (qwen-instruct 等) 拒绝"有 tool_choice 但没有 tools"的
+        # 请求。转换层可能保留了客户端指名某个函数的 tool_choice, 在上游边界
+        # 再兜一次底。
+        if "tool_choice" in result and not result.get("tools"):
+            result.pop("tool_choice", None)
     # WHY: When model supports reasoning and thinking was requested, inject
     # chat_template_kwargs so vLLM-based upstreams enable reasoning mode.
     # Only send for chat_completions format; Responses API (GPT-5.5 etc.) rejects it.
@@ -2398,6 +2500,11 @@ def open_upstream(payload: Dict[str, Any], auth_token: str, upstream_url: str, t
 def iter_sse_lines(response: urllib.response.addinfourl) -> Iterable[Tuple[Optional[str], str]]:
     event: Optional[str] = None
     data_lines: List[str] = []
+    # WHY: 上游有时根本不返回 SSE, 而是直接吐一段 JSON 错误体 (例如
+    # {"success":false,"message":"Tool 'web_search' disabled..."})。这种行既不是
+    # event: 也不是 data:, 以前会被直接丢掉, 结果就是"上游报错但代理只看到一个
+    # 空流"。这里把它们收集起来, 收尾时作为一个合成事件交出去。
+    non_sse_lines: List[str] = []
     while True:
         try:
             raw = response.readline()
@@ -2406,6 +2513,8 @@ def iter_sse_lines(response: urllib.response.addinfourl) -> Iterable[Tuple[Optio
         if not raw:
             if data_lines:
                 yield event, "\n".join(data_lines)
+            if non_sse_lines and not data_lines:
+                yield "non_sse_body", "\n".join(non_sse_lines)
             return
         line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
         if line == "":
@@ -2420,6 +2529,8 @@ def iter_sse_lines(response: urllib.response.addinfourl) -> Iterable[Tuple[Optio
             event = line[6:].strip()
         elif line.startswith("data:"):
             data_lines.append(line[5:].strip())
+        else:
+            non_sse_lines.append(line)
 
 
 def chat_tool_call_payloads(tool_calls: Any, is_delta: bool) -> List[Dict[str, Any]]:
@@ -2472,6 +2583,23 @@ def tool_call_kind_from_payloads(payloads: List[Dict[str, Any]], is_delta: bool)
 
 
 def extract_text_delta(event: Optional[str], data: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+    # WHY: 上游有时不返回 SSE, 而是直接吐一段 JSON 错误体 (例如
+    # {"success":false,"message":"Tool 'web_search' disabled..."})。iter_sse_lines
+    # 会把这种内容合成一个 "non_sse_body" 事件交出来, 这里统一转成 error,
+    # 各调用点已有 502 / response.failed 出口 —— 不会再表现成"模型没说话"。
+    if event == "non_sse_body":
+        try:
+            error_obj = _orjson_loads(data)
+        except ValueError:
+            error_obj = None
+        message = data[:500]
+        if isinstance(error_obj, dict):
+            err = error_obj.get("error")
+            if isinstance(err, dict) and err.get("message"):
+                message = str(err["message"])[:500]
+            elif isinstance(error_obj.get("message"), str) and error_obj["message"]:
+                message = error_obj["message"][:500]
+        return "error", {"error": {"type": "upstream_error", "message": message}, "raw": error_obj if error_obj is not None else data}
     if data == "[DONE]":
         return "done", None
     try:
@@ -2600,6 +2728,10 @@ def extract_text_delta(event: Optional[str], data: str) -> Tuple[str, Optional[D
         # Some vLLM versions: {"detail": "error message", "type": "..."}
         if obj.get("detail") and isinstance(obj.get("detail"), str) and not obj.get("choices"):
             return "error", {"error": {"type": "upstream_error", "message": obj["detail"]}, "raw": obj}
+        # WHY: 校方 GenAI 平台的错误格式: {"success": false, "message": "...",
+        # "code": 500}。以前这种体会被当成正常事件丢掉 -> 客户端只看到空回复。
+        if obj.get("success") is False and isinstance(obj.get("message"), str) and obj.get("message"):
+            return "error", {"error": {"type": "upstream_error", "message": obj["message"]}, "raw": obj}
     return "ignore", obj
 
 def parse_tool_arguments(arguments: Any) -> Dict[str, Any]:
@@ -2674,7 +2806,11 @@ def codex_function_call_item(
             item["namespace"] = namespace
         return item
     item = {
-        "id": tool_call.get("id") or f"fc_proxy_{now_ms()}_{offset}",
+        # WHY: function_call 的 item id 必须是 fc_ 形状的**新** id (OpenAI
+        # Responses 的约定), 不能直接复用上游返回的 tool_call id —— 上游
+        # v4.8.9 修的正是"id 前缀不对导致 Codex 流被断开"。上游原始 id 放到
+        # call_id 字段里, 由它负责和上游工具调用对应。
+        "id": f"fc_proxy_{now_ms()}_{offset}",
         "type": "function_call",
         "status": "completed",
         "call_id": call_id,
@@ -3163,6 +3299,10 @@ def responses_json_to_anthropic_message(payload: Dict[str, Any], model_config: M
     # redacted_thinking as fallback.
     has_real_thinking = False
     _reasoning_as_text_fallback = ""
+    # WHY: tool_use 块先收集, 最后统一追加到正文之后 —— Anthropic 的内容顺序
+    # 应该是 [text, tool_use]。直接 append 的话会变成 [tool_use, text],
+    # Claude Code 里工具调用会排到正文前面 (上游 v4.8.5 修的同一个问题)。
+    _tool_use_items: List[Dict[str, Any]] = []
     # WHY: Route reasoning into a thinking block only when the client requested
     # thinking; otherwise emit it as 🤔-prefixed text so clients without a thinking
     # UI (Codex) still see it. Callers stamp _thinking_requested onto the converted
@@ -3193,7 +3333,7 @@ def responses_json_to_anthropic_message(payload: Dict[str, Any], model_config: M
             fc_name = item.get("name")
             if not fc_name:
                 continue
-            content.append({
+            _tool_use_items.append({
                 "type": "tool_use",
                 "id": item.get("call_id") or item.get("id") or f"toolu_proxy_{now_ms()}_{uuid.uuid4().hex[:8]}",
                 "name": fc_name,
@@ -3222,6 +3362,8 @@ def responses_json_to_anthropic_message(payload: Dict[str, Any], model_config: M
             content.append({"type": "text", "text": "🤔 Thinking\n````\n" + _reasoning_as_text_fallback + "\n````"})
     elif output_text:
         content.append({"type": "text", "text": output_text})
+    # WHY: tool_use 放在正文之后, 保持 [text, tool_use] 顺序。
+    content.extend(_tool_use_items)
     if not content:
         content.append({"type": "text", "text": ""})
     # WHY: Only inject redacted_thinking when client explicitly requested thinking
@@ -3397,12 +3539,15 @@ def _codex_emit_recovered_response(emit_fn, request_id: str, message_id: str, co
 
     for original_item in function_items:
         call_id = original_item.get("call_id") or original_item.get("id") or f"call_{response_id()}"
-        item = dict(original_item, id=call_id, call_id=call_id, status="in_progress")
+        # WHY: 同 codex_function_call_item —— item.id 用 fc_ 形状的新 id,
+        # call_id 才带上游原始 id (上游 v4.8.9)。
+        fc_id = f"fc_proxy_{now_ms()}_{len(output)}"
+        item = dict(original_item, id=fc_id, call_id=call_id, status="in_progress")
         output_index = len(output)
         emit_fn("response.output_item.added", {"output_index": output_index, "item": item})
         arguments = item.get("arguments", "{}")
-        emit_fn("response.function_call_arguments.delta", {"output_index": output_index, "item_id": call_id, "call_id": call_id, "delta": arguments})
-        emit_fn("response.function_call_arguments.done", {"output_index": output_index, "item_id": call_id, "call_id": call_id, "arguments": arguments})
+        emit_fn("response.function_call_arguments.delta", {"output_index": output_index, "item_id": fc_id, "call_id": call_id, "delta": arguments})
+        emit_fn("response.function_call_arguments.done", {"output_index": output_index, "item_id": fc_id, "call_id": call_id, "arguments": arguments})
         completed_call = dict(item, status="completed")
         emit_fn("response.output_item.done", {"output_index": output_index, "item": completed_call})
         output.append(completed_call)

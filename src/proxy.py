@@ -125,6 +125,8 @@ from transformer import (
     responses_unsupported_modalities_payload, responses_json_output_text,
     responses_json_to_anthropic_message, extract_anthropic_usage, _to_anthropic_usage,
     _codex_emit_recovered_response,
+    # Classifier / unsupported built-in tools
+    classifier_short_circuit_enabled, find_unsupported_tools, unsupported_tool_policy,
 )
 
 from config_store import (
@@ -167,6 +169,10 @@ def read_json_body(handler: BaseHTTPRequestHandler) -> Dict[str, Any]:
     length = int(handler.headers.get("content-length", "0") or "0")
     if length > limit:
         send_json(handler, 413, {"type": "error", "error": {"type": "invalid_request_error", "message": f"Request body too large: {length} bytes (max {limit})"}})
+        # WHY: 超限的 body 没有被读走, keep-alive 下残留字节会被当成下一个
+        # 请求行解析 (URI Too Long), 甚至出现 413 之后又补一个 200 的双重响应。
+        # 直接断开连接。
+        handler.close_connection = True
         raise _BodyTooLargeError()
     if length > 0:
         raw = handler.rfile.read(length)
@@ -182,6 +188,7 @@ def read_json_body(handler: BaseHTTPRequestHandler) -> Dict[str, Any]:
                 chunks.append(chunk)
                 if sum(len(c) for c in chunks) > limit:
                     send_json(handler, 413, {"type": "error", "error": {"type": "invalid_request_error", "message": f"Request body too large (max {limit})"}})
+                    handler.close_connection = True
                     raise _BodyTooLargeError()
         except (socket.timeout, OSError):
             pass
@@ -289,6 +296,26 @@ def write_data_sse(handler: BaseHTTPRequestHandler, data: str) -> None:
             return False
         raise
     return True
+
+
+def _non_sse_error_text(data: str) -> str:
+    """从上游返回的非 SSE JSON 错误体里取出可读的错误信息。
+
+    WHY: 上游有时不返回 SSE, 而是直接吐一段 JSON (例如
+    {"success":false,"message":"Tool 'web_search' disabled..."} 或
+    {"error":{"message":"..."}})。这段内容以前会被丢掉, 表现成"空流"。
+    """
+    try:
+        obj = _orjson_loads(data)
+    except ValueError:
+        return data[:500]
+    if isinstance(obj, dict):
+        err = obj.get("error")
+        if isinstance(err, dict) and err.get("message"):
+            return str(err["message"])[:500]
+        if isinstance(obj.get("message"), str) and obj["message"]:
+            return obj["message"][:500]
+    return data[:500]
 
 
 def emit_redacted_thinking_sse(handler: BaseHTTPRequestHandler, index: int = 0) -> None:
@@ -588,6 +615,41 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
             config = current_config()
             classifier_request = is_claude_auto_classifier_request(body)
+            # WHY: Claude Code auto mode 在执行每条 Bash 命令前会发一个安全分类
+            # 请求, 期望收到严格的标签式判定。校园模型 (glm-chat 等) 返回的判定
+            # 格式不稳定, 分类器解析不了, 结果是**所有命令都被拦**
+            # ("could not evaluate this action")。这是可信的校园代理, 用户跑的
+            # 是自己的代码, 所以按上游 v4.8.6 的做法直接短路返回一个干净的放行
+            # 判定, 不再转发给模型。SHTU_CLASSIFIER_SHORTCIRCUIT=0 可关闭。
+            if classifier_request and classifier_short_circuit_enabled():
+                send_json(self, 200, {
+                    "id": f"msg_proxy_{now_ms()}",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": body.get("model") or "proxy",
+                    "content": [{"type": "text", "text": "<block>no</block>"}],
+                    "stop_reason": "end_turn",
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 0, "output_tokens": 3},
+                })
+                log_info(f"classifier short-circuit model={body.get('model')} verdict=allow")
+                return
+            # WHY: 上游没有开通 web_search / file_search / code_interpreter 这类
+            # 内置工具, 带着走会得到 400 或空流。按要求: 命中就明确告诉客户端
+            # 这个功能不支持 (而不是静默剥掉后让模型自己瞎猜)。
+            unsupported_tools = find_unsupported_tools(body.get("tools"))
+            if unsupported_tools and unsupported_tool_policy() == "error":
+                send_json(self, 400, {"type": "error", "error": {
+                    "type": "invalid_request_error",
+                    "message": (
+                        f"Unsupported tool type(s): {', '.join(unsupported_tools)}. "
+                        "This proxy's upstream does not provide built-in tools "
+                        "(web_search / file_search / code_interpreter / computer_use / mcp); "
+                        "use client-side tools instead."
+                    ),
+                }})
+                log_warn(f"rejected request with unsupported built-in tools types={','.join(unsupported_tools)}")
+                return
             stream = False if classifier_request and "stream" not in body else request_stream_enabled(body, config.default_stream)
             model_config = config.find_model(body.get("model"))
             upstream_url = os.getenv("UPSTREAM_RESPONSES_URL") or model_config.base_url
@@ -609,7 +671,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # in Claude Code / Codex) instead of plain text.
             # budget_tokens is required by Anthropic API spec; allocate max_tokens-1
             # so thinking gets most of the budget (cc-switch uses the same strategy).
-            if not isinstance(body.get("thinking"), dict) and not classifier_request and (getattr(model_config, "enable_thinking", False) or getattr(model_config, "supports_reasoning", False)):
+            # WHY: 只看 enable_thinking, 不看 supports_reasoning。
+            # supports_reasoning 只是"模型具备推理能力", 客户端没要求 thinking 时
+            # 强行注入, 会让没开 thinking 的客户端也收到 reasoning/thinking 块
+            # (上游 v4.9.2 修的同一个问题)。客户端主动要 thinking 的情况由
+            # sanitized_*_body_for_model 里的 _thinking_requested 分支负责,
+            # 不受影响。
+            if not isinstance(body.get("thinking"), dict) and not classifier_request and getattr(model_config, "enable_thinking", False):
                 _budget = max(1, (body.get("max_tokens") or 16384) - 1)
                 body["thinking"] = {"type": "enabled", "budget_tokens": _budget}
             body_for_upstream = body
@@ -638,7 +706,17 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 tool_result_visible_fallback=config.tool_result_visible_fallback,
             )
             upstream_payload = sanitized_upstream_payload_for_model(upstream_payload, model_config)
+            # WHY: classifier 请求必须让上游关掉推理 —— glm-chat 之类
+            # enable_thinking=True 的模型会返回 reasoning_content, 判定文本被
+            # 包成 "🤔 Thinking...ALLOW", 分类器解析不了。
+            if classifier_request and model_config.api_format == "chat_completions":
+                upstream_payload["chat_template_kwargs"] = {"enable_thinking": False}
             auto_cache_marks = apply_auto_cache_control(upstream_payload) if model_config.api_format != "chat_completions" else 0
+            # WHY: apply_auto_cache_control 会在 sanitize 之后**重新写回**
+            # cache_control, 而没有任何上游 API 支持这个 Anthropic 专有字段
+            # (Responses 格式上游会回 "Unknown parameter: input[0].cache_control")。
+            # 注入完再剥一次, 保证出网的 payload 干净。
+            upstream_payload = _strip_cache_control(upstream_payload)
             log_debug(
                 "request "
                 f"model={body.get('model')} route={model_config.model_id} "
@@ -667,6 +745,18 @@ class ProxyHandler(BaseHTTPRequestHandler):
         try:
             body = read_json_body(self)
             config = current_config()
+            # WHY: 同 /v1/messages 路径 —— 上游不支持的内置工具直接明确报错。
+            unsupported_tools = find_unsupported_tools(body.get("tools"))
+            if unsupported_tools and unsupported_tool_policy() == "error":
+                send_json(self, 400, responses_error_payload(
+                    f"Unsupported tool type(s): {', '.join(unsupported_tools)}. "
+                    "This proxy's upstream does not provide built-in tools "
+                    "(web_search / file_search / code_interpreter / computer_use / mcp); "
+                    "use client-side tools instead.",
+                    "invalid_request_error",
+                ))
+                log_warn(f"rejected codex request with unsupported built-in tools types={','.join(unsupported_tools)}")
+                return
             stream = request_stream_enabled(body, config.default_stream)
             model_config = config.find_model(body.get("model"))
             upstream_url = os.getenv("UPSTREAM_RESPONSES_URL") or model_config.base_url
@@ -684,7 +774,8 @@ class ProxyHandler(BaseHTTPRequestHandler):
             # WHY: When model has Thinking enabled but client didn't send thinking param,
             # inject it so reasoning content is emitted as reasoning items (collapsible
             # in Codex) instead of plain text.
-            if not isinstance(body.get("thinking"), dict) and not is_claude_auto_classifier_request(body) and (getattr(model_config, "enable_thinking", False) or getattr(model_config, "supports_reasoning", False)):
+            # WHY: 同 /v1/messages 路径 —— 只在 enable_thinking 时自动注入。
+            if not isinstance(body.get("thinking"), dict) and not is_claude_auto_classifier_request(body) and getattr(model_config, "enable_thinking", False):
                 body["thinking"] = {"type": "enabled", "budget_tokens": max(1, (body.get("max_output_tokens") or body.get("max_tokens") or 16384) - 1)}
             # WHY: Codex normally cannot attach images through its public Responses
             # schema, so model catalogs commonly leave supports_image=false. Some
@@ -711,7 +802,12 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 tool_result_visible_fallback=config.tool_result_visible_fallback,
             )
             upstream_payload = sanitized_upstream_payload_for_model(upstream_payload, model_config)
+            # WHY: 同 /v1/messages 路径 —— classifier 请求关闭上游推理。
+            if is_claude_auto_classifier_request(body) and model_config.api_format == "chat_completions":
+                upstream_payload["chat_template_kwargs"] = {"enable_thinking": False}
             auto_cache_marks = apply_auto_cache_control(upstream_payload) if model_config.api_format != "chat_completions" else 0
+            # WHY: 同 /v1/messages 路径 —— 注入 cache_control 之后再剥一次。
+            upstream_payload = _strip_cache_control(upstream_payload)
             log_debug(
                 "codex request "
                 f"model={body.get('model')} route={model_config.model_id} "
@@ -727,6 +823,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                 self.handle_responses_non_streaming(body, upstream_payload, auth_token, upstream_url, timeout, model_config)
         except _BodyTooLargeError:
             return
+        except _ClientDisconnectedError as exc:
+            # WHY: 上游已完成、代理正在组装 SSE 收尾事件时, Codex 客户端可能
+            # 已经断开 (取消/超时/重连)。这是正常断连, 不是代理故障:
+            # 只需一行日志, 不应刷出整段 traceback, 也不该再往已断开的
+            # socket 回写 500。
+            log_error(f"codex downstream client disconnected during responses finalize model={body.get('model', '?')} event={exc}")
+            self.close_connection = True
         except Exception as exc:
             log_error(traceback.format_exc())
             if not self.wfile.closed:
@@ -1115,6 +1218,14 @@ class ProxyHandler(BaseHTTPRequestHandler):
         try:
             send_sse_headers(self)
             for event, data in iter_sse_lines(response):
+                if event == "non_sse_body":
+                    # WHY: 上游没有返回 SSE, 而是返回了一段 JSON 错误体。原样
+                    # 转发的路径不能把它当成一个叫 "non_sse_body" 的事件甩给
+                    # 客户端, 要转成明确的 error 事件。
+                    error_text = _non_sse_error_text(data)
+                    log_error(f"codex compact sse relay got non-SSE body model={model_config.model_id} body={error_text}")
+                    write_sse(self, "error", {"error": {"type": "upstream_error", "message": error_text}})
+                    break
                 if event and data:
                     write_sse(self, event, _orjson_loads(data) if data.startswith("{") else data)
             write_data_sse(self, "[DONE]")

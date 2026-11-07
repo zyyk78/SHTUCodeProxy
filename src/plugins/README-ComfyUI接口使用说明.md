@@ -435,26 +435,32 @@ file result.png
 
 ## 产物存放在哪里
 
-一次生成会产生**两份文件**：
+一次生成**最终只保留一份文件**（插件工作副本）：
 
 | 位置 | 内容 | 谁管理 |
 |---|---|---|
-| ComfyUI `output/<managed_output_subdir>/<日期>_<前缀>_*.png` | ComfyUI 落盘的原件 | ComfyUI 写入；插件提交时改写 `filename_prefix` 把它路由进子目录 |
-| 插件 `data_root/outputs/<job_id>.png` + `.json` | 插件复制的副本 + 元数据 | 插件；`DELETE /jobs/<id>` 和 `POST /purge` 都只清这份 |
+| 插件 `data_root/outputs/<job_id>.png` + `.json` | 唯一保留的产物副本 + 元数据 | 插件；`DELETE /jobs/<id>` 和 `POST /purge` 都清这份 |
+| ComfyUI `output/<managed_output_subdir>/<日期>_<前缀>_*.png` | 临时中转文件 | ComfyUI 写入；插件复制成功后**立即删除** |
 
-**与 Web 端隔离**：配置 `managed_output_subdir`（如 `api-web`）后，插件提交的
-任务会被自动改写 `filename_prefix` 为 `<subdir>/<日期>_原名`，ComfyUI 原生
-把 prefix 的目录部分当子文件夹，于是插件的图全部落到
-`output/api-web/20261010_Qwen_image_2.1_00001.png` 这类路径，Web 端手工
-生成的图仍在 output 根目录 —— 两边物理隔离，互不干扰。
+**流转过程**：配置 `managed_output_subdir`（如 `api-web`）后，插件提交的
+任务会被自动改写 `filename_prefix` 为 `<subdir>/<日期>_原名`，ComfyUI 先把图
+落到 `output/api-web/20261010_Qwen_image_2.1_00001.png` 这类路径；插件检测到
+任务完成后把图复制到自己的 `data_root/outputs/<job_id>.png`，然后立刻删除
+ComfyUI 那份临时原件 —— `output/api-web/` 目录不会留残留。Web 端手工生成的图
+（output 根目录）完全不受影响，只有 managed 子目录内的文件会被清走。
 
+- 复制成功但删除原件失败时，插件打 warning 日志但任务仍算完成（副本已就位）
+- 权限要求：代理进程用户需要对 `comfy_output_root/<managed_output_subdir>/`
+  有写权限才能删原件；删不掉时残留文件需手动清理
+- ComfyUI 全局历史：任务完成后插件会自动调 ComfyUI 的 `POST /history`
+  清掉该条目，Web 端历史面板看不到 API 生成记录，也不会出现指向已删
+  原件的坏缩略图（清除失败只打 warning，不影响任务状态）
 - 子目录不存在时 ComfyUI 自动创建
-- 日期标签自动带上（`%Y%m%d`），按天归档
 - 恶意 graph 里的绝对路径 filename_prefix 会被 basename 化后归入子目录，无法逃逸
-- `managed_output_subdir` 不配置则不改写（兼容旧行为，图落到 output 根目录）
+- `managed_output_subdir` 不配置则不改写也不删除（兼容旧行为，图落到 output 根目录并保留）
 
-purge/DELETE 清的是**副本**；原件在 managed 子目录里按日期滚动，需要彻底
-清理时删 `comfy_output_root/<managed_output_subdir>/` 下的文件即可。
+purge/DELETE 清的是**插件副本**；如果出现删除失败的残留原件，手动删
+`comfy_output_root/<managed_output_subdir>/` 下的文件即可。
 
 ## VRAM 空闲看门狗
 
